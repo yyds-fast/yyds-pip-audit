@@ -4,3 +4,5 @@
 rm -rf dist build yyds_pip_audit.egg-info
 
 python -m build
+
+python -m twine upload dist/*
