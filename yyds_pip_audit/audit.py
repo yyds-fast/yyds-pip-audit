@@ -95,7 +95,7 @@ def should_exclude(dir_name, exclude_dirs=None):
         
     return False
 
-def build_local_import_mapping():
+def build_local_import_mapping(imported_top_levels=None):
     """
     Stream-scans metadata of all installed distributions in the environment
     and builds a reverse mapping: [imported module name -> PyPI package name].
@@ -112,6 +112,23 @@ def build_local_import_mapping():
                 continue
         except Exception:
             continue
+
+        # Get top-level names for this package to check if it's imported
+        top_levels = []
+        try:
+            top_txt = dist.read_text('top_level.txt')
+            if top_txt:
+                top_levels = [line.strip() for line in top_txt.splitlines() if line.strip() and not line.startswith('#')]
+        except Exception:
+            pass
+
+        if not top_levels:
+            top_levels = [package_name.lower().replace('-', '_'), package_name]
+
+        # Optimization: skip packages that are not imported by the project at all
+        if imported_top_levels is not None:
+            if not any(tl in imported_top_levels for tl in top_levels):
+                continue
 
         # Try mapping files first (best support for namespaces)
         has_files_mapping = False
@@ -138,25 +155,8 @@ def build_local_import_mapping():
             pass
 
         if not has_files_mapping:
-            # Fallback to top_level.txt or normalization
-            top_levels = None
-            try:
-                top_levels = dist.read_text('top_level.txt')
-            except Exception:
-                pass
-
-            if top_levels:
-                try:
-                    for line in top_levels.splitlines():
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            mapping[line] = package_name
-                except Exception:
-                    pass
-            else:
-                norm_name = package_name.lower().replace('-', '_')
-                mapping[norm_name] = package_name
-                mapping[package_name] = package_name
+            for tl in top_levels:
+                mapping[tl] = package_name
 
     # Common PyPI packages with non-standard import/package names
     hardcoded_fallback = {
@@ -272,7 +272,8 @@ def audit_dependencies(project_dir, exclude_dirs=None):
     Groups results by PyPI package name to handle namespace packages and duplicate submodules.
     """
     imported_mods = extract_imports(project_dir, exclude_dirs)
-    import_to_pypi = build_local_import_mapping()
+    imported_top_levels = {mod.split('.')[0] for mod in imported_mods}
+    import_to_pypi = build_local_import_mapping(imported_top_levels)
     
     grouped_results = {}
     for mod in imported_mods:
