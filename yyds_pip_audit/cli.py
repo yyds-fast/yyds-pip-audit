@@ -31,10 +31,15 @@ def main(directory, output, output_format, exclude, check):
     # Resolve directory path
     directory_path = os.path.abspath(directory)
     
+    # Process comma-separated excludes
+    exclude_list = []
+    for item in exclude:
+        exclude_list.extend([x.strip() for x in item.split(',') if x.strip()])
+    
     # Audit dependencies and measure duration
     start_time = time.perf_counter()
     try:
-        results = audit_dependencies(directory_path, exclude_dirs=exclude)
+        results = audit_dependencies(directory_path, exclude_dirs=exclude_list)
     except Exception as e:
         console.print(f"[red]Error during dependency auditing: {e}[/red]", err=True)
         sys.exit(1)

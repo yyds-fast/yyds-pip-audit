@@ -18,8 +18,13 @@ def test_should_exclude():
     assert should_exclude('.venv') is True
     assert should_exclude('venv') is True
     assert should_exclude('src') is False
+    assert should_exclude('data') is True  # Default excludes
     assert should_exclude('some_package.egg-info') is True
     assert should_exclude('my_custom_dir', exclude_dirs={'my_custom_dir'}) is True
+    
+    # Test relative path matching
+    assert should_exclude('data', 'src/data', exclude_dirs={'src/data'}) is True
+    assert should_exclude('other', 'src/other', exclude_dirs={'src/data'}) is False
 
 def test_parse_requirements_file(tmp_path):
     req_file = tmp_path / "requirements.txt"

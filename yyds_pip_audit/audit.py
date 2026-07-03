@@ -11,7 +11,10 @@ import importlib.metadata
 DEFAULT_EXCLUDES = {
     '.venv', 'venv', 'env', '.env', '__pycache__', '.git', '.idea',
     'build', 'dist', 'node_modules', '.pytest_cache', '.tox',
-    '.mypy_cache', '.hg', '.svn', 'egg-info'
+    '.mypy_cache', '.hg', '.svn', 'egg-info',
+    # Common non-code/asset directories
+    'data', 'dataset', 'datasets', 'static', 'media', 'assets',
+    'public', 'uploads', 'logs', 'log', 'tmp', 'temp', 'htmlcov'
 }
 
 # Standard library fallback list for Python versions < 3.10
@@ -78,15 +81,19 @@ class ImportVisitor(ast.NodeVisitor):
     def visit_Name(self, node): pass
     def visit_Constant(self, node): pass
 
-def should_exclude(dir_name, exclude_dirs=None):
+def should_exclude(dir_name, rel_path_str="", exclude_dirs=None):
     """
-    Check if a directory should be excluded from scanning
+    Check if a directory should be excluded from scanning.
+    Supports matching the base directory name (e.g., 'venv') or its relative path (e.g., 'src/data').
     """
     if exclude_dirs is None:
         exclude_dirs = DEFAULT_EXCLUDES
     
-    # Direct match or contains match
-    if dir_name in exclude_dirs:
+    # Normalize relative path separators to forward slashes for cross-platform consistency
+    norm_rel_path = rel_path_str.replace('\\', '/')
+    
+    # Check both the directory name and relative path against exclusions
+    if dir_name in exclude_dirs or norm_rel_path in exclude_dirs:
         return True
     
     # Substring / pattern matching
@@ -206,8 +213,22 @@ def extract_imports(project_dir, exclude_dirs=None):
 
     # 一次 os.walk 完成本地模块注册和第三方导入提取
     for root, dirs, files in os.walk(project_path):
-        # 排除指定的忽略目录
-        dirs[:] = [d for d in dirs if not should_exclude(d, exclude_dirs)]
+        # 排除指定的忽略目录，包含相对路径的精准匹配
+        pruned_dirs = []
+        for d in dirs:
+            dir_full_path = Path(root) / d
+            try:
+                rel_path = dir_full_path.relative_to(project_path)
+                rel_path_str = str(rel_path)
+            except Exception:
+                rel_path_str = d
+                
+            if should_exclude(d, rel_path_str, exclude_dirs):
+                continue
+            pruned_dirs.append(d)
+            
+        # 原地修改 dirs 以进行剪枝，不再向下遍历被忽略的目录
+        dirs[:] = pruned_dirs
         
         for file in files:
             if file.endswith('.py'):
@@ -224,6 +245,10 @@ def extract_imports(project_dir, exclude_dirs=None):
                 
                 # 2. 提取导入
                 try:
+                    # 过滤超过 2MB 的超大生成文件，防止 AST 树解析过慢
+                    if os.path.getsize(file_path) > 2 * 1024 * 1024:
+                        continue
+                        
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     
