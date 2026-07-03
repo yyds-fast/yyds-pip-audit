@@ -4,6 +4,7 @@ import sys
 import cv2
 import requests
 import yaml
+from google.cloud import storage
 
 from utils import calculate_something
 
