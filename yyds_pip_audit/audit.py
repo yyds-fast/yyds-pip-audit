@@ -256,15 +256,17 @@ def extract_imports(project_dir, exclude_dirs=None):
 def resolve_pypi_name(import_path, import_to_pypi):
     """
     通过最长前缀匹配，将导入路径解析为 PyPI 包名。
+    返回 (pypi_name, matched_prefix)
     """
     parts = import_path.split('.')
     while parts:
         candidate = ".".join(parts)
         if candidate in import_to_pypi:
-            return import_to_pypi[candidate]
+            return import_to_pypi[candidate], candidate
         parts.pop()
     # 兜底截取首个模块名
-    return import_path.split('.')[0]
+    first_comp = import_path.split('.')[0]
+    return first_comp, first_comp
 
 def audit_dependencies(project_dir, exclude_dirs=None):
     """
@@ -277,8 +279,7 @@ def audit_dependencies(project_dir, exclude_dirs=None):
     
     grouped_results = {}
     for mod in imported_mods:
-        pypi_name = resolve_pypi_name(mod, import_to_pypi)
-        import_name = mod.split('.')[0]
+        pypi_name, import_name = resolve_pypi_name(mod, import_to_pypi)
         
         if pypi_name in grouped_results:
             grouped_results[pypi_name]["import_names"].add(import_name)

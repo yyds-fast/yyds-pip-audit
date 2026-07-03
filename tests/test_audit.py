@@ -118,8 +118,8 @@ def test_resolve_pypi_name():
         "requests": "requests"
     }
     
-    assert resolve_pypi_name("google.cloud.storage.blob", mapping) == "google-cloud-storage"
-    assert resolve_pypi_name("google.cloud.pubsub.client", mapping) == "google-cloud-pubsub"
-    assert resolve_pypi_name("requests.adapters", mapping) == "requests"
-    assert resolve_pypi_name("unknown_package", mapping) == "unknown_package"
+    assert resolve_pypi_name("google.cloud.storage.blob", mapping) == ("google-cloud-storage", "google.cloud.storage")
+    assert resolve_pypi_name("google.cloud.pubsub.client", mapping) == ("google-cloud-pubsub", "google.cloud.pubsub")
+    assert resolve_pypi_name("requests.adapters", mapping) == ("requests", "requests")
+    assert resolve_pypi_name("unknown_package", mapping) == ("unknown_package", "unknown_package")
 
