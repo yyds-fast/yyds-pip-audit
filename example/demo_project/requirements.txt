@@ -1,0 +1,3 @@
+opencv-python==4.8.0.76
+PyYAML>=6.0
+unused-package==1.0.0
