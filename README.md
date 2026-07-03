@@ -4,6 +4,8 @@
 
 It also supports checking your code imports against an existing `requirements.txt` to help you identify missing dependencies or unused packages.
 
+[中文说明 (Chinese README)](README_CN.md)
+
 ## ✨ Features
 
 - **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) to reliably find all top-level imports.
@@ -22,7 +24,7 @@ Install it using `pip` locally or from PyPI:
 pip install -e .
 
 # Normal installation
-pip install yyds-pip-audit
+pip install -U yyds-pip-audit
 ```
 
 ## 🛠 Usage

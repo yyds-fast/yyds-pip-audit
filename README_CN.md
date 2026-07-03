@@ -4,6 +4,8 @@
 
 同时，它还支持与已有的 `requirements.txt` 进行对比，快速发现代码中缺失的依赖，或定位在依赖列表中多余/未使用的包。
 
+[English README](README.md)
+
 ## ✨ 特性
 
 - **精准解析**：使用 AST 静态解析，准确抓取 top-level 导入（包含 `import xxx` 和 `from xxx import yyy`）。
@@ -22,7 +24,7 @@
 pip install -e .
 
 # 直接安装
-pip install yyds-pip-audit
+pip install -U yyds-pip-audit
 ```
 
 ## 🛠 使用方法
