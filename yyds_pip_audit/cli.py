@@ -16,17 +16,17 @@ console = Console()
 
 @click.command()
 @click.argument('directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=".")
-@click.option('-o', '--output', type=click.Path(writable=True), help="将依赖输出保存到指定文件 (例如 requirements.txt)")
-@click.option('-f', '--format', 'output_format', type=click.Choice(['text', 'requirements', 'json']), default='text', help="依赖输出的格式格式: text (终端表格), requirements (标准依赖), json (JSON 数据)")
-@click.option('-e', '--exclude', multiple=True, help="要忽略的额外目录名称 (可多次指定)")
-@click.option('-c', '--check', type=click.Path(exists=True, dir_okay=False), help="审计对比指定的 requirements 文件，分析缺失和多余依赖")
+@click.option('-o', '--output', type=click.Path(writable=True), help="Save dependency output to specified file (e.g. requirements.txt)")
+@click.option('-f', '--format', 'output_format', type=click.Choice(['text', 'requirements', 'json']), default='text', help="Format of the dependency output: text (terminal table), requirements (standard dependencies), json (JSON data)")
+@click.option('-e', '--exclude', multiple=True, help="Extra directory names to exclude (can be specified multiple times)")
+@click.option('-c', '--check', type=click.Path(exists=True, dir_okay=False), help="Audit and compare against specified requirements file to analyze missing and unused dependencies")
 @click.version_option(version=__version__, prog_name=__title__)
 def main(directory, output, output_format, exclude, check):
     """
-    yyds-pip-audit: 极速且精准的 Python 项目导入依赖审计及 PyPI 包映射工具。
+    yyds-pip-audit: A fast and precise Python project import dependency auditing and PyPI mapping tool.
     
-    默认扫描当前目录或指定目录下的 Python 文件，解析所有第三方包的导入，
-    并自动关联本地环境的版本。
+    Scans the specified directory (defaults to current directory) for Python files,
+    extracts all third-party package imports, and associates them with installed local versions.
     """
     # Resolve directory path
     directory_path = os.path.abspath(directory)
@@ -83,7 +83,7 @@ def main(directory, output, output_format, exclude, check):
         if output:
             with open(output, 'w', encoding='utf-8') as f:
                 f.write(formatted_content)
-            console.print(f"[green]JSON 审计结果已成功写入到 {output}[/green]")
+            console.print(f"[green]JSON audit results successfully saved to {output}[/green]")
         else:
             print(formatted_content)
             
@@ -93,13 +93,13 @@ def main(directory, output, output_format, exclude, check):
             if item['status'] == 'installed':
                 lines.append(f"{item['pypi_name']}=={item['version']}")
             else:
-                lines.append(f"{item['pypi_name']} # 本地未安装")
+                lines.append(f"{item['pypi_name']} # not installed locally")
         
         formatted_content = "\n".join(lines) + "\n"
         if output:
             with open(output, 'w', encoding='utf-8') as f:
                 f.write(formatted_content)
-            console.print(f"[green]依赖列表已成功导出到 {output}[/green]")
+            console.print(f"[green]Dependencies list successfully exported to {output}[/green]")
         else:
             print(formatted_content, end='')
             
@@ -107,49 +107,49 @@ def main(directory, output, output_format, exclude, check):
         # Show beautiful Rich outputs
         title_panel = Panel(
             f"[bold green]yyds-pip-audit v{__version__}[/bold green]\n"
-            f"[dim]项目路径: {directory_path}\n"
-            f"分析耗时: {duration:.3f} 秒[/dim]",
-            title="🔍 依赖项分析与审计",
+            f"[dim]Project Path: {directory_path}\n"
+            f"Audit Time: {duration:.3f} seconds[/dim]",
+            title="🔍 Dependency Analysis & Audit",
             expand=False
         )
         console.print(title_panel)
         
         if not results:
-            console.print("[yellow]未检测到任何第三方依赖导入。[/yellow]")
+            console.print("[yellow]No third-party dependency imports detected.[/yellow]")
         else:
             table = Table(show_header=True, header_style="bold magenta", box=None)
-            table.add_column("导入名称", style="cyan")
-            table.add_column("PyPI 包名称", style="green")
-            table.add_column("本地版本", style="yellow")
-            table.add_column("状态", style="bold")
+            table.add_column("Import Name", style="cyan")
+            table.add_column("PyPI Package", style="green")
+            table.add_column("Local Version", style="yellow")
+            table.add_column("Status", style="bold")
             
             for item in results:
-                status_str = "[green]已安装[/green]" if item['status'] == 'installed' else "[red]未安装[/red]"
+                status_str = "[green]Installed[/green]" if item['status'] == 'installed' else "[red]Not Installed[/red]"
                 ver_str = item['version'] if item['version'] else "-"
                 table.add_row(item['import_name'], item['pypi_name'], ver_str, status_str)
                 
             console.print(table)
             
         if check:
-            console.print("\n[bold blue]📋 Requirements.txt 对比审计结果[/bold blue]")
-            console.print(f"[dim]对比文件: {os.path.abspath(check)}[/dim]\n")
+            console.print("\n[bold blue]📋 Requirements.txt Audit & Comparison Results[/bold blue]")
+            console.print(f"[dim]Comparison File: {os.path.abspath(check)}[/dim]\n")
             
             # Print missing
             if missing_in_reqs:
-                console.print("[bold red]❌ 缺失的依赖 (代码中已导入，但未记录在 requirements 中):[/bold red]")
+                console.print("[bold red]❌ Missing Dependencies (imported in code but not registered in requirements):[/bold red]")
                 for item in missing_in_reqs:
-                    ver_suffix = f" (本地版本: {item['version']})" if item['version'] else ""
-                    console.print(f"  • [red]{item['pypi_name']}[/red] [dim](由 import {item['import_name']} 引入){ver_suffix}[/dim]")
+                    ver_suffix = f" (local version: {item['version']})" if item['version'] else ""
+                    console.print(f"  • [red]{item['pypi_name']}[/red] [dim](introduced by import {item['import_name']}){ver_suffix}[/dim]")
             else:
-                console.print("[green]✔ 没发现缺失依赖 (所有导入都在 requirements 中记录)[/green]")
+                console.print("[green]✔ No missing dependencies found (all imports are registered in requirements)[/green]")
                 
             # Print unused
             if unused_in_reqs:
-                console.print("\n[bold yellow]⚠️ 未使用的依赖 (requirements 中记录了，但代码中没有导入):[/bold yellow]")
+                console.print("\n[bold yellow]⚠️ Unused Dependencies (registered in requirements but not imported in code):[/bold yellow]")
                 for item in unused_in_reqs:
                     console.print(f"  • [yellow]{item['raw']}[/yellow]")
             else:
-                console.print("\n[green]✔ 没发现多余依赖 (所有记录均被代码导入)[/green]")
+                console.print("\n[green]✔ No unused dependencies found (all requirements are imported in code)[/green]")
 
         if output:
             # Write default requirements file (even in text mode we support saving as requirements file)
@@ -161,7 +161,7 @@ def main(directory, output, output_format, exclude, check):
                     lines.append(f"{item['pypi_name']}")
             with open(output, 'w', encoding='utf-8') as f:
                 f.write("\n".join(lines) + "\n")
-            console.print(f"\n[green]✔ 依赖列表成功导出到 {output}[/green]")
+            console.print(f"\n[green]✔ Dependencies successfully exported to {output}[/green]")
 
 if __name__ == "__main__":
     main()
