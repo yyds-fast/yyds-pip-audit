@@ -41,6 +41,43 @@ STD_LIBS = {
     "wsgiref", "xdg", "xml", "xmlrpc", "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo"
 }
 
+# Regex to pre-filter files containing actual python imports
+IMPORT_RE = re.compile(r'(?:^|;)\s*(?:import\s+|from\s+[\w\.]+\s+import\s+)', re.MULTILINE)
+
+class ImportVisitor(ast.NodeVisitor):
+    """
+    Optimized AST visitor that extracts absolute imports,
+    bypassing expression-level leaf nodes to accelerate traversal.
+    """
+    def __init__(self):
+        self.imports = set()
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.imports.add(alias.name)
+
+    def visit_ImportFrom(self, node):
+        if node.level == 0 and node.module:
+            for alias in node.names:
+                # Store full import path for namespace matching (e.g. google.cloud.storage)
+                self.imports.add(f"{node.module}.{alias.name}")
+
+    # No-ops to skip deep traversal of expressions and simple statements
+    def visit_Expr(self, node): pass
+    def visit_Assign(self, node): pass
+    def visit_AugAssign(self, node): pass
+    def visit_AnnAssign(self, node): pass
+    def visit_Return(self, node): pass
+    def visit_Delete(self, node): pass
+    def visit_Assert(self, node): pass
+    def visit_Global(self, node): pass
+    def visit_Nonlocal(self, node): pass
+    def visit_Pass(self, node): pass
+    def visit_Break(self, node): pass
+    def visit_Continue(self, node): pass
+    def visit_Name(self, node): pass
+    def visit_Constant(self, node): pass
+
 def should_exclude(dir_name, exclude_dirs=None):
     """
     Check if a directory should be excluded from scanning
@@ -61,7 +98,8 @@ def should_exclude(dir_name, exclude_dirs=None):
 def build_local_import_mapping():
     """
     Stream-scans metadata of all installed distributions in the environment
-    and builds a reverse mapping: [imported module name -> PyPI package name]
+    and builds a reverse mapping: [imported module name -> PyPI package name].
+    Supports namespace packages using dist.files matching.
     """
     mapping = {}
     
@@ -75,27 +113,50 @@ def build_local_import_mapping():
         except Exception:
             continue
 
-        # Try reading top_level.txt; handle exceptions by falling back
-        top_levels = None
+        # Try mapping files first (best support for namespaces)
+        has_files_mapping = False
         try:
-            top_levels = dist.read_text('top_level.txt')
+            if dist.files:
+                for file_path in dist.files:
+                    path_str = str(file_path).replace('\\', '/')
+                    if path_str.endswith('.py'):
+                        parts = list(Path(path_str).parts)
+                        # Exclude build files, virtualenv leftovers, metadata directories
+                        if any(p.startswith('.') or p.endswith('.dist-info') or p.endswith('.egg-info') for p in parts):
+                            continue
+                        
+                        if parts[-1] == '__init__.py':
+                            parts.pop()
+                        else:
+                            parts[-1] = Path(parts[-1]).stem
+                            
+                        if parts and all(p.isidentifier() for p in parts):
+                            mod_path = ".".join(parts)
+                            mapping[mod_path] = package_name
+                            has_files_mapping = True
         except Exception:
             pass
 
-        if top_levels:
+        if not has_files_mapping:
+            # Fallback to top_level.txt or normalization
+            top_levels = None
             try:
-                for line in top_levels.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Map importable name to package name (e.g. "cv2" -> "opencv-python")
-                        mapping[line] = package_name
+                top_levels = dist.read_text('top_level.txt')
             except Exception:
                 pass
-        else:
-            # If top_level.txt is missing, normalize name to create import mapping
-            norm_name = package_name.lower().replace('-', '_')
-            mapping[norm_name] = package_name
-            mapping[package_name] = package_name
+
+            if top_levels:
+                try:
+                    for line in top_levels.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            mapping[line] = package_name
+                except Exception:
+                    pass
+            else:
+                norm_name = package_name.lower().replace('-', '_')
+                mapping[norm_name] = package_name
+                mapping[package_name] = package_name
 
     # Common PyPI packages with non-standard import/package names
     hardcoded_fallback = {
@@ -132,7 +193,7 @@ def build_local_import_mapping():
 def extract_imports(project_dir, exclude_dirs=None):
     """
     扫描 project_dir，解析本地模块、标准库模块，并提取第三方导入模块名称。
-    合并了双次 Walk，进行了快速字符串过滤优化。
+    合并了双次 Walk，进行了快速正则初筛与 AST 剪枝优化。
     """
     if exclude_dirs is None:
         exclude_dirs = DEFAULT_EXCLUDES
@@ -166,18 +227,14 @@ def extract_imports(project_dir, exclude_dirs=None):
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     
-                    # 快速初筛：如果文件里完全不包含 "import" 关键字，则无需进行 AST 解析
-                    if 'import' not in content:
+                    # 快速正则初筛：如果文件里不包含实际导入动作，则无需进行 AST 解析
+                    if not IMPORT_RE.search(content):
                         continue
                         
                     tree = ast.parse(content, filename=file_path)
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.Import):
-                            for alias in node.names:
-                                imported_modules.add(alias.name.split('.')[0])
-                        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                            if node.module:
-                                imported_modules.add(node.module.split('.')[0])
+                    visitor = ImportVisitor()
+                    visitor.visit(tree)
+                    imported_modules.update(visitor.imports)
                 except Exception:
                     continue
 
@@ -188,21 +245,44 @@ def extract_imports(project_dir, exclude_dirs=None):
     else:
         stdlib = stdlib.union(STD_LIBS)
         
-    third_party = imported_modules - stdlib - local_files - {'', 'yyds_pip_audit', 'yyds-pip-audit'}
-    return sorted(list(third_party))
+    filtered_imports = set()
+    for imp in imported_modules:
+        first_comp = imp.split('.')[0]
+        if first_comp not in stdlib and first_comp not in local_files and first_comp not in {'', 'yyds_pip_audit', 'yyds-pip-audit'}:
+            filtered_imports.add(imp)
+            
+    return sorted(list(filtered_imports))
+
+def resolve_pypi_name(import_path, import_to_pypi):
+    """
+    通过最长前缀匹配，将导入路径解析为 PyPI 包名。
+    """
+    parts = import_path.split('.')
+    while parts:
+        candidate = ".".join(parts)
+        if candidate in import_to_pypi:
+            return import_to_pypi[candidate]
+        parts.pop()
+    # 兜底截取首个模块名
+    return import_path.split('.')[0]
 
 def audit_dependencies(project_dir, exclude_dirs=None):
     """
     Audits imports in the project_dir and maps them to PyPI package names and versions.
+    Groups results by PyPI package name to handle namespace packages and duplicate submodules.
     """
     imported_mods = extract_imports(project_dir, exclude_dirs)
     import_to_pypi = build_local_import_mapping()
     
-    results = []
+    grouped_results = {}
     for mod in imported_mods:
-        # Determine PyPI package name from mapping or fallback to import name
-        pypi_name = import_to_pypi.get(mod, mod)
+        pypi_name = resolve_pypi_name(mod, import_to_pypi)
+        import_name = mod.split('.')[0]
         
+        if pypi_name in grouped_results:
+            grouped_results[pypi_name]["import_names"].add(import_name)
+            continue
+            
         installed_version = None
         status = "not_installed"
         
@@ -213,17 +293,26 @@ def audit_dependencies(project_dir, exclude_dirs=None):
         except importlib.metadata.PackageNotFoundError:
             # If not found under matched name, retry under normalized module name
             try:
-                installed_version = importlib.metadata.version(mod)
+                installed_version = importlib.metadata.version(import_name)
                 status = "installed"
-                pypi_name = mod
+                pypi_name = import_name
             except importlib.metadata.PackageNotFoundError:
                 pass
                 
-        results.append({
-            "import_name": mod,
+        grouped_results[pypi_name] = {
+            "import_names": {import_name},
             "pypi_name": pypi_name,
             "version": installed_version,
             "status": status
+        }
+        
+    results = []
+    for pypi_name, info in grouped_results.items():
+        results.append({
+            "import_name": ", ".join(sorted(list(info["import_names"]))),
+            "pypi_name": info["pypi_name"],
+            "version": info["version"],
+            "status": info["status"]
         })
         
     return results

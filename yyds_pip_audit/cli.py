@@ -93,7 +93,7 @@ def main(directory, output, output_format, exclude, check):
             if item['status'] == 'installed':
                 lines.append(f"{item['pypi_name']}=={item['version']}")
             else:
-                lines.append(f"{item['pypi_name']} # not installed locally")
+                lines.append(f"{item['pypi_name']}")
         
         formatted_content = "\n".join(lines) + "\n"
         if output:

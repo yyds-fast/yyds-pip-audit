@@ -77,7 +77,7 @@ def test_extract_imports_and_local_modules(tmp_path):
     # - 'requests' and 'PIL' are third-party, so they should be present.
     
     assert "requests" in imports
-    assert "PIL" in imports
+    assert "PIL.Image" in imports
     assert "os" not in imports
     assert "sys" not in imports
     assert "local_module" not in imports
@@ -109,3 +109,17 @@ def test_build_local_import_mapping(mock_dists):
     assert mapping["requests"] == "requests"
     # Hardcoded fallbacks
     assert mapping["yaml"] == "PyYAML"
+
+def test_resolve_pypi_name():
+    from yyds_pip_audit.audit import resolve_pypi_name
+    mapping = {
+        "google.cloud.storage": "google-cloud-storage",
+        "google.cloud.pubsub": "google-cloud-pubsub",
+        "requests": "requests"
+    }
+    
+    assert resolve_pypi_name("google.cloud.storage.blob", mapping) == "google-cloud-storage"
+    assert resolve_pypi_name("google.cloud.pubsub.client", mapping) == "google-cloud-pubsub"
+    assert resolve_pypi_name("requests.adapters", mapping) == "requests"
+    assert resolve_pypi_name("unknown_package", mapping) == "unknown_package"
+
