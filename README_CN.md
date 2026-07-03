@@ -8,9 +8,9 @@
 
 ## ✨ 特性
 
-- **精准解析**：使用 AST 静态解析，准确抓取 top-level 导入（包含 `import xxx` 和 `from xxx import yyy`）。
-- **智能映射**：自动扫描当前虚拟环境的包元数据（读取 `top_level.txt` 等），解决如导入 `cv2` 实际对应 `opencv-python`、导入 `PIL` 实际对应 `Pillow` 的映射问题。
-- **防止虚拟环境污染**：在扫描项目时自动过滤 `.venv`、`venv`、`node_modules` 等开发环境目录，杜绝干扰。
+- **精准解析**：使用 AST 静态解析，准确抓取 top-level 导入（包含 `import xxx` 和 `from xxx import yyy`）。对于超过 2MB 的超大生成文件自动跳过以提升性能。
+- **智能映射**：自动扫描当前虚拟环境的包元数据，支持精准映射命名空间包（例如 `google.cloud.storage` 会被解析并精准显示为 `google.cloud.storage` 而非模糊的 `google`）。
+- **防止虚拟环境与大目录污染**：在扫描项目时自动过滤 `.venv`、`venv`、`node_modules` 等开发环境目录，并默认过滤 `data`、`static`、`media`、`assets`、`public`、`uploads`、`logs`、`tmp`、`temp`、`htmlcov` 等非代码/资源目录，杜绝扫描卡顿。
 - **格式灵活**：支持输出为精美终端表格、标准 `requirements.txt` 格式，或输出为易于程序解析的 `JSON` 格式。
 - **多维度审计**：通过 `--check` 选项审计已有依赖文件，清晰列出“缺失的依赖”与“未使用的依赖”。
 - **无感适配**：全面兼容 Python 3.7+ 及所有主流操作系统。
@@ -67,10 +67,17 @@ yyds-pip-audit --check requirements.txt
 
 ### 4. 忽略特定目录
 
-可以通过 `-e` 或 `--exclude` 忽略不想扫描的自定义文件夹（可多次指定）：
+可以通过 `-e` 或 `--exclude` 忽略不想扫描的自定义文件夹。支持多次指定、逗号分隔、以及指定相对路径：
 
 ```bash
+# 忽略多个目录
 yyds-pip-audit -e my_temp_dir -e tests/mock_data
+
+# 使用逗号分隔一次性忽略多个目录
+yyds-pip-audit -e my_temp_dir,build_assets
+
+# 忽略指定的相对路径目录（精确排除）
+yyds-pip-audit -e src/data
 ```
 
 ## 📋 命令行参数详解

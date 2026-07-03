@@ -8,9 +8,9 @@ It also supports checking your code imports against an existing `requirements.tx
 
 ## ✨ Features
 
-- **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) to reliably find all top-level imports.
-- **Smart PyPI Mapping**: Scans package metadata (`top_level.txt`) in your active python environment to map import names like `cv2` to `opencv-python`, `PIL` to `Pillow`, etc.
-- **Clean Walk**: Automatically ignores directories like `.venv`, `venv`, `node_modules`, `.git`, `.idea` etc., preventing environment pollution.
+- **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) to reliably find all top-level imports. Files larger than 2MB are automatically skipped for performance.
+- **Smart PyPI Mapping**: Scans package metadata in your active python environment. Supports precise mapping of namespace packages (e.g. `google.cloud.storage` maps to `google-cloud-storage` and is displayed as such under `Import Name` instead of a vague `google`).
+- **Clean Walk**: Automatically ignores directories like `.venv`, `venv`, `node_modules`, `.git`, `.idea` as well as asset/data folders (`data`, `dataset`, `static`, `media`, `assets`, `public`, `uploads`, `logs`, `tmp`, `temp`, `htmlcov` etc.) to prevent directory traversal lag.
 - **Multiple Formats**: Outputs audit results as a beautiful terminal table, standard `requirements.txt` format, or `JSON` format.
 - **Dependency Checking**: Offers a `--check` flag to scan and compare against a requirements file, revealing missing and unused dependencies.
 - **Wide Compatibility**: Compatible with Python 3.7+ across all platforms.
@@ -67,10 +67,17 @@ yyds-pip-audit --check requirements.txt
 
 ### 4. Custom Exclude Folders
 
-Use `-e` or `--exclude` to ignore additional folders:
+Use `-e` or `--exclude` to ignore additional folders. You can pass multiple options, use comma-separated paths, or specify relative paths:
 
 ```bash
+# Exclude multiple folders
 yyds-pip-audit -e temp_folder -e tests/mocks
+
+# Exclude via comma-separated list
+yyds-pip-audit -e temp_folder,build_assets
+
+# Exclude specific relative path
+yyds-pip-audit -e src/data
 ```
 
 ## 📋 Command Line Interface
