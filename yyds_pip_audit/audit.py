@@ -44,13 +44,21 @@ STD_LIBS = {
     "wsgiref", "xdg", "xml", "xmlrpc", "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo"
 }
 
+def normalize_package_name(name):
+    """
+    Normalize package name according to PEP 503.
+    Lowers the name and replaces any sequence of ., _, - with a single -.
+    """
+    if not name:
+        return ""
+    return re.sub(r'[-_.]+', '-', name).lower()
+
 # Regex to pre-filter files containing actual python imports
-IMPORT_RE = re.compile(r'(?:^|;)\s*(?:import\s+|from\s+[\w\.]+\s+import\s+)', re.MULTILINE)
+IMPORT_RE = re.compile(r'\bimport\b')
 
 class ImportVisitor(ast.NodeVisitor):
     """
-    Optimized AST visitor that extracts absolute imports,
-    bypassing expression-level leaf nodes to accelerate traversal.
+    Optimized AST visitor that extracts absolute imports and static dynamic imports.
     """
     def __init__(self):
         self.imports = set()
@@ -65,26 +73,58 @@ class ImportVisitor(ast.NodeVisitor):
                 # Store full import path for namespace matching (e.g. google.cloud.storage)
                 self.imports.add(f"{node.module}.{alias.name}")
 
-    # No-ops to skip deep traversal of expressions and simple statements
-    def visit_Expr(self, node): pass
-    def visit_Assign(self, node): pass
-    def visit_AugAssign(self, node): pass
-    def visit_AnnAssign(self, node): pass
-    def visit_Return(self, node): pass
-    def visit_Delete(self, node): pass
-    def visit_Assert(self, node): pass
-    def visit_Global(self, node): pass
-    def visit_Nonlocal(self, node): pass
-    def visit_Pass(self, node): pass
-    def visit_Break(self, node): pass
-    def visit_Continue(self, node): pass
-    def visit_Name(self, node): pass
-    def visit_Constant(self, node): pass
+    def visit_Call(self, node):
+        # Handle importlib.import_module('module_name')
+        if isinstance(node.func, ast.Attribute):
+            if (isinstance(node.func.value, ast.Name) and 
+                node.func.value.id == 'importlib' and 
+                node.func.attr == 'import_module'):
+                if node.args:
+                    val = None
+                    if isinstance(node.args[0], ast.Constant):
+                        val = node.args[0].value
+                    elif hasattr(ast, 'Str') and isinstance(node.args[0], ast.Str):
+                        val = node.args[0].s
+                    if isinstance(val, str):
+                        self.imports.add(val)
+        # Handle __import__('module_name')
+        elif isinstance(node.func, ast.Name) and node.func.id == '__import__':
+            if node.args:
+                val = None
+                if isinstance(node.args[0], ast.Constant):
+                    val = node.args[0].value
+                elif hasattr(ast, 'Str') and isinstance(node.args[0], ast.Str):
+                    val = node.args[0].s
+                if isinstance(val, str):
+                    self.imports.add(val)
+        
+        self.generic_visit(node)
+
+def parse_gitignore(project_dir):
+    """
+    Parses .gitignore file in project_dir and returns a list of patterns to exclude.
+    """
+    patterns = []
+    gitignore_path = os.path.join(project_dir, '.gitignore')
+    if os.path.exists(gitignore_path):
+        try:
+            with open(gitignore_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    # Remove trailing slashes and normalize separators
+                    if line.endswith('/'):
+                        line = line[:-1]
+                    line = line.replace('\\', '/')
+                    patterns.append(line)
+        except Exception:
+            pass
+    return patterns
 
 def should_exclude(dir_name, rel_path_str="", exclude_dirs=None):
     """
-    Check if a directory should be excluded from scanning.
-    Supports matching the base directory name (e.g., 'venv') or its relative path (e.g., 'src/data').
+    Check if a directory should be excluded from scanning (backward compatibility).
     """
     if exclude_dirs is None:
         exclude_dirs = DEFAULT_EXCLUDES
@@ -99,6 +139,24 @@ def should_exclude(dir_name, rel_path_str="", exclude_dirs=None):
     # Substring / pattern matching
     if dir_name.endswith('.egg-info'):
         return True
+        
+    return False
+
+def should_exclude_dir(dir_full_path, dir_name, project_path, exclude_base_names, exclude_absolute_paths):
+    """
+    Determine if a directory should be excluded from search.
+    """
+    if dir_name in exclude_base_names:
+        return True
+    
+    # Check if absolute path matches or starts with any of the excluded absolute paths
+    try:
+        dir_abs = Path(dir_full_path).resolve()
+        for p in exclude_absolute_paths:
+            if dir_abs == p or p in dir_abs.parents:
+                return True
+    except Exception:
+        pass
         
     return False
 
@@ -245,6 +303,7 @@ def build_local_import_mapping(imported_top_levels=None):
         "jwt": "PyJWT",
         "kombu": "kombu",
         "kubernetes": "kubernetes",
+        "command": "click", # Fallback for CLI/command packages
         "langdetect": "langdetect",
         "langid": "langid",
         "lz4": "lz4",
@@ -346,59 +405,74 @@ def build_local_import_mapping(imported_top_levels=None):
 def extract_imports(project_dir, exclude_dirs=None):
     """
     扫描 project_dir，解析本地模块、标准库模块，并提取第三方导入模块名称。
-    合并了双次 Walk，进行了快速正则初筛与 AST 剪枝优化。
+    支持 .gitignore 自动集成与绝对/相对路径匹配。
     """
-    if exclude_dirs is None:
-        exclude_dirs = DEFAULT_EXCLUDES
-    else:
-        exclude_dirs = set(exclude_dirs).union(DEFAULT_EXCLUDES)
+    project_path = Path(project_dir).resolve()
+    
+    # 1. 汇总所有排除模式
+    raw_excludes = set(DEFAULT_EXCLUDES)
+    if exclude_dirs:
+        raw_excludes.update(exclude_dirs)
+    
+    # 自动加载 .gitignore 规则
+    git_ignores = parse_gitignore(project_path)
+    raw_excludes.update(git_ignores)
+
+    # 2. 划分排除条件：基础名 vs 绝对路径
+    exclude_base_names = set()
+    exclude_absolute_paths = set()
+    
+    for item in raw_excludes:
+        if '/' in item or '\\' in item or os.path.isabs(item):
+            try:
+                abs_path = (project_path / item).resolve()
+                exclude_absolute_paths.add(abs_path)
+            except Exception:
+                pass
+        else:
+            exclude_base_names.add(item)
 
     imported_modules = set()
     local_files = set()
-    project_path = Path(project_dir).resolve()
 
-    # 一次 os.walk 完成本地模块注册和第三方导入提取
+    # 3. os.walk 单次遍历
     for root, dirs, files in os.walk(project_path):
-        # 排除指定的忽略目录，包含相对路径的精准匹配
         pruned_dirs = []
         for d in dirs:
             dir_full_path = Path(root) / d
-            try:
-                rel_path = dir_full_path.relative_to(project_path)
-                rel_path_str = str(rel_path)
-            except Exception:
-                rel_path_str = d
-                
-            if should_exclude(d, rel_path_str, exclude_dirs):
+            if should_exclude_dir(dir_full_path, d, project_path, exclude_base_names, exclude_absolute_paths):
                 continue
             pruned_dirs.append(d)
             
-        # 原地修改 dirs 以进行剪枝，不再向下遍历被忽略的目录
+        # 原地剪枝
         dirs[:] = pruned_dirs
         
         for file in files:
+            file_path = os.path.join(root, file)
+            file_abs_path = Path(file_path).resolve()
+            
+            # 过滤排除的文件
+            if file in exclude_base_names or file_abs_path in exclude_absolute_paths:
+                continue
+                
             if file.endswith('.py'):
-                file_path = os.path.join(root, file)
                 rel_path = Path(file_path)
                 
-                # 1. 注册本地文件/模块
+                # 注册本地模块
                 local_files.add(rel_path.stem)
                 try:
-                    # 排除最顶层的包名/目录名
                     local_files.add(rel_path.relative_to(project_path).parts[0])
                 except Exception:
                     pass
                 
-                # 2. 提取导入
+                # 提取导入
                 try:
-                    # 过滤超过 2MB 的超大生成文件，防止 AST 树解析过慢
                     if os.path.getsize(file_path) > 2 * 1024 * 1024:
                         continue
                         
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     
-                    # 快速正则初筛：如果文件里不包含实际导入动作，则无需进行 AST 解析
                     if not IMPORT_RE.search(content):
                         continue
                         
@@ -406,20 +480,37 @@ def extract_imports(project_dir, exclude_dirs=None):
                     visitor = ImportVisitor()
                     visitor.visit(tree)
                     imported_modules.update(visitor.imports)
-                except Exception:
-                    continue
+                except SyntaxError as e:
+                    print(f"Warning: Syntax error in file {file_path}: {e}", file=sys.stderr)
+                except PermissionError as e:
+                    print(f"Warning: Permission denied for file {file_path}: {e}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Warning: Failed to parse file {file_path}: {e}", file=sys.stderr)
 
-    # 3. 扣除标准库、本地模块、自身库名等
+    # 4. 剔除标准库与本地库
     stdlib = getattr(sys, 'stdlib_module_names', set())
     if not stdlib:
         stdlib = STD_LIBS
     else:
         stdlib = stdlib.union(STD_LIBS)
         
+    stdlib = stdlib.union(sys.builtin_module_names)
+    
+    # 动态排除项目自身的模块/包名，防止自我扫描干扰
+    project_name = project_path.name
+    ignored_project_names = {
+        '', 
+        project_name, 
+        project_name.replace('-', '_'),
+        normalize_package_name(project_name)
+    }
+        
     filtered_imports = set()
     for imp in imported_modules:
         first_comp = imp.split('.')[0]
-        if first_comp not in stdlib and first_comp not in local_files and first_comp not in {'', 'yyds_pip_audit', 'yyds-pip-audit'}:
+        if (first_comp not in stdlib and 
+            first_comp not in local_files and 
+            first_comp not in ignored_project_names):
             filtered_imports.add(imp)
             
     return sorted(list(filtered_imports))
@@ -451,28 +542,38 @@ def audit_dependencies(project_dir, exclude_dirs=None):
     grouped_results = {}
     for mod in imported_mods:
         pypi_name, import_name = resolve_pypi_name(mod, import_to_pypi)
+        normalized_pypi_name = normalize_package_name(pypi_name)
         
-        if pypi_name in grouped_results:
-            grouped_results[pypi_name]["import_names"].add(import_name)
+        if normalized_pypi_name in grouped_results:
+            grouped_results[normalized_pypi_name]["import_names"].add(import_name)
             continue
             
         installed_version = None
         status = "not_installed"
         
         try:
-            # Check locally installed version
             installed_version = importlib.metadata.version(pypi_name)
             status = "installed"
         except importlib.metadata.PackageNotFoundError:
-            # If not found under matched name, retry under normalized module name
             try:
-                installed_version = importlib.metadata.version(import_name)
+                installed_version = importlib.metadata.version(normalized_pypi_name)
                 status = "installed"
-                pypi_name = import_name
+                pypi_name = normalized_pypi_name
             except importlib.metadata.PackageNotFoundError:
-                pass
+                try:
+                    installed_version = importlib.metadata.version(import_name)
+                    status = "installed"
+                    pypi_name = import_name
+                except importlib.metadata.PackageNotFoundError:
+                    try:
+                        normalized_import_name = normalize_package_name(import_name)
+                        installed_version = importlib.metadata.version(normalized_import_name)
+                        status = "installed"
+                        pypi_name = normalized_import_name
+                    except importlib.metadata.PackageNotFoundError:
+                        pass
                 
-        grouped_results[pypi_name] = {
+        grouped_results[normalized_pypi_name] = {
             "import_names": {import_name},
             "pypi_name": pypi_name,
             "version": installed_version,
@@ -480,7 +581,7 @@ def audit_dependencies(project_dir, exclude_dirs=None):
         }
         
     results = []
-    for pypi_name, info in grouped_results.items():
+    for normalized_pypi_name, info in grouped_results.items():
         results.append({
             "import_name": ", ".join(sorted(list(info["import_names"]))),
             "pypi_name": info["pypi_name"],
@@ -490,28 +591,74 @@ def audit_dependencies(project_dir, exclude_dirs=None):
         
     return results
 
-def parse_requirements_file(file_path):
+def parse_requirements_file(file_path, visited=None):
     """
     Parses a requirements.txt file and returns a dictionary of package names mapped to lines.
+    Supports recursive parsing of include files (-r <file>).
     """
-    packages = {}
-    if not os.path.exists(file_path):
-        return packages
+    if visited is None:
+        visited = set()
         
-    with open(file_path, 'r', encoding='utf-8') as f:
+    packages = {}
+    file_path = os.path.abspath(file_path)
+    if file_path in visited or not os.path.exists(file_path):
+        return packages
+    visited.add(file_path)
+    
+    base_dir = os.path.dirname(file_path)
+    
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
+            line_strip = line.strip()
+            if not line_strip or line_strip.startswith('#'):
                 continue
             
-            # Extract package name by stripping version specifiers
-            parts = re.split(r'==|>=|<=|>|<|~=|!=|;', line)
-            if parts:
-                pkg_name = parts[0].strip()
-                # Normalize name for robust lookup (case-insensitive, dash/underscore normalized)
-                norm_name = pkg_name.lower().replace('_', '-')
+            # Handle recursive inclusion: -r filename or --requirement filename
+            if line_strip.startswith('-r ') or line_strip.startswith('--requirement '):
+                parts = line_strip.split(None, 1)
+                if len(parts) == 2:
+                    sub_file = parts[1].strip()
+                    sub_path = os.path.join(base_dir, sub_file)
+                    packages.update(parse_requirements_file(sub_path, visited))
+                continue
+                
+            # Skip other options like -c, -f, -i, --index-url etc.
+            if line_strip.startswith('-'):
+                if line_strip.startswith('-e ') or line_strip.startswith('--editable '):
+                    pkg_line = line_strip.split(None, 1)[1].strip()
+                else:
+                    continue
+            else:
+                pkg_line = line_strip
+
+            # Extract package name
+            pkg_name = None
+            
+            # Case 4: Egg fragment in VCS/URL dependencies (e.g. #egg=requests)
+            if '#egg=' in pkg_line:
+                egg_part = pkg_line.split('#egg=', 1)[1]
+                pkg_name = re.split(r'[;&]', egg_part)[0].strip()
+            
+            # Case 5: Direct reference URL (PEP 508) (e.g. requests @ https://...)
+            elif ' @ ' in pkg_line:
+                pkg_name = pkg_line.split(' @ ', 1)[0].strip()
+                
+            else:
+                # Standard format
+                parts = pkg_line.split(';', 1)
+                main_part = parts[0].strip()
+                main_part = re.split(r'==|>=|<=|>|<|~=|!=', main_part)[0].strip()
+                
+                # Strip extras if present
+                if '[' in main_part:
+                    main_part = main_part.split('[', 1)[0].strip()
+                    
+                pkg_name = main_part
+            
+            if pkg_name:
+                norm_name = normalize_package_name(pkg_name)
                 packages[norm_name] = {
-                    "raw": line,
+                    "raw": line_strip,
                     "name": pkg_name
                 }
     return packages

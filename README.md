@@ -9,10 +9,15 @@ It also supports checking your code imports against an existing `requirements.tx
 ## ✨ Features
 
 - **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) to reliably find all top-level imports. Files larger than 2MB are automatically skipped for performance.
+- **Dynamic Import Scanning**: Detects static string imports like `importlib.import_module('pandas')` and `__import__('numpy')`.
 - **Smart PyPI Mapping**: Scans package metadata in your active python environment. Supports precise mapping of namespace packages (e.g. `google.cloud.storage` maps to `google-cloud-storage` and is displayed as such under `Import Name` instead of a vague `google`).
 - **Clean Walk**: Automatically ignores directories like `.venv`, `venv`, `node_modules`, `.git`, `.idea` as well as asset/data folders (`data`, `dataset`, `static`, `media`, `assets`, `public`, `uploads`, `logs`, `tmp`, `temp`, `htmlcov` etc.) to prevent directory traversal lag.
+- **Auto `.gitignore` Integration**: Automatically parses and respects `.gitignore` rules in the target directory to skip matches out-of-the-box.
+- **`pyproject.toml` Support**: Reads configuration settings from `[tool.yyds-pip-audit]` section in `pyproject.toml`.
 - **Multiple Formats**: Outputs audit results as a beautiful terminal table, standard `requirements.txt` format, or `JSON` format.
-- **Dependency Checking**: Offers a `--check` flag to scan and compare against a requirements file, revealing missing and unused dependencies.
+- **Industrial Requirements Checking**: Offers a `--check` flag to scan and compare against a requirements file, revealing missing and unused dependencies. Supports recursive requirements (`-r`), editable requirements (`-e`), PEP 508 direct references (`requests @ https://...`), egg fragments in Git/VCS URLs (`#egg=name`), and environment markers.
+- **PEP 503 Normalization**: Adheres to PyPI standard normalization for package names comparison.
+- **CI-friendly Warning System**: Prints warning logs to stderr and skips files gracefully in case of syntax or permission errors instead of crashing.
 - **Wide Compatibility**: Compatible with Python 3.7+ across all platforms.
 
 ## 🚀 Installation
@@ -79,6 +84,19 @@ yyds-pip-audit -e temp_folder,build_assets
 # Exclude specific relative path
 yyds-pip-audit -e src/data
 ```
+
+### 5. pyproject.toml Configuration
+
+You can write configuration options directly in your project's `pyproject.toml` file under the `[tool.yyds-pip-audit]` section:
+
+```toml
+[tool.yyds-pip-audit]
+exclude = ["build_assets", "custom_dir"]
+format = "json"
+output = "audit_report.json"
+```
+
+Command-line parameters always override values from the configuration file.
 
 ## 📋 Command Line Interface
 

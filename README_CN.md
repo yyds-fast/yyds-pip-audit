@@ -9,10 +9,15 @@
 ## ✨ 特性
 
 - **精准解析**：使用 AST 静态解析，准确抓取 top-level 导入（包含 `import xxx` 和 `from xxx import yyy`）。对于超过 2MB 的超大生成文件自动跳过以提升性能。
+- **动态导入检测**：静态解析 `importlib.import_module('pandas')` 与 `__import__('numpy')` 等以常数字传参的动态导入语句。
 - **智能映射**：自动扫描当前虚拟环境的包元数据，支持精准映射命名空间包（例如 `google.cloud.storage` 会被解析并精准显示为 `google.cloud.storage` 而非模糊的 `google`）。
-- **防止虚拟环境与大目录污染**：在扫描项目时自动过滤 `.venv`、`venv`、`node_modules` 等开发环境目录，并默认过滤 `data`、`static`、`media`、`assets`、`public`、`uploads`、`logs`、`tmp`、`temp`、`htmlcov` 等非代码/资源目录，杜绝扫描卡顿。
-- **格式灵活**：支持输出为精美终端表格、标准 `requirements.txt` 格式，或输出为易于程序解析的 `JSON` 格式。
-- **多维度审计**：通过 `--check` 选项审计已有依赖文件，清晰列出“缺失的依赖”与“未使用的依赖”。
+- **杜绝扫描卡顿**：自动过滤常见的开发/虚拟环境文件夹（如 `.venv`、`venv`、`node_modules` 等），并自动忽略大资源目录以提升扫描性能。
+- **`.gitignore` 自动加载集成**：自动读取并解析扫描目录下的 `.gitignore` 规则，实现无感过滤。
+- **配置文件配置支持**：支持从 `pyproject.toml` 的 `[tool.yyds-pip-audit]` 部分读取排除路径、输出格式及保存路径。
+- **格式灵活**：支持输出为终端着色表格、标准的 `requirements.txt` 格式，或输出为易于集成的 `JSON` 格式。
+- **工业级依赖对比审计**：通过 `--check` 选项对比 `requirements.txt` 审计缺失和未使用依赖。支持递归要求文件（`-r`）、可编辑模式（`-e`）、PEP 508 直接引用（`pkg @ url`）、VCS 依赖末尾的 `#egg=` 命名提取以及环境标记（`;`）过滤。
+- **PEP 503 包名规范化**：依据 PyPI PEP 503 标准规范化包名比对，确保匹配万无一失。
+- **CI 友好型错误系统**：针对损坏文件（语法错误）或不可读文件（权限受限）在 stderr 中输出 warning 告警并优雅跳过，不会引发崩溃。
 - **无感适配**：全面兼容 Python 3.7+ 及所有主流操作系统。
 
 ## 🚀 安装
@@ -79,6 +84,19 @@ yyds-pip-audit -e my_temp_dir,build_assets
 # 忽略指定的相对路径目录（精确排除）
 yyds-pip-audit -e src/data
 ```
+
+### 5. 配置文件 pyproject.toml 配置
+
+你可以直接在项目的 `pyproject.toml` 文件的 `[tool.yyds-pip-audit]` 节点下进行全局配置，例如：
+
+```toml
+[tool.yyds-pip-audit]
+exclude = ["build_assets", "custom_dir"]
+format = "json"
+output = "audit_report.json"
+```
+
+命令行指定的参数永远会覆盖配置文件中的默认配置。
 
 ## 📋 命令行参数详解
 

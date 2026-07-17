@@ -10,14 +10,77 @@ from rich.panel import Panel
 
 import time
 from .__version__ import __version__, __title__, __description__
-from .audit import audit_dependencies, parse_requirements_file
+from .audit import audit_dependencies, parse_requirements_file, normalize_package_name
 
 console = Console()
+
+def load_config_from_toml(project_dir):
+    """
+    Loads configuration from pyproject.toml if present.
+    Minimal dependency-free TOML parser for [tool.yyds-pip-audit] section.
+    """
+    config = {}
+    toml_path = os.path.join(project_dir, 'pyproject.toml')
+    if not os.path.exists(toml_path):
+        return config
+        
+    try:
+        # If tomllib is available (Python 3.11+), use it
+        try:
+            import tomllib
+            with open(toml_path, 'rb') as f:
+                data = tomllib.load(f)
+                return data.get('tool', {}).get('yyds-pip-audit', {})
+        except ImportError:
+            pass
+            
+        # Dependency-free simple line parser for tool.yyds-pip-audit section
+        in_section = False
+        with open(toml_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1].strip()
+                    if section == 'tool.yyds-pip-audit':
+                        in_section = True
+                    else:
+                        in_section = False
+                    continue
+                
+                if in_section and '=' in line:
+                    key, val = line.split('=', 1)
+                    key = key.strip()
+                    val = val.strip()
+                    # Parse list: exclude = ["dir1", "dir2"]
+                    if val.startswith('[') and val.endswith(']'):
+                        items = []
+                        raw_items = val[1:-1].split(',')
+                        for item in raw_items:
+                            item = item.strip().strip('"').strip("'")
+                            if item:
+                                items.append(item)
+                        config[key] = items
+                    # Parse string: format = "json"
+                    elif (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                        config[key] = val[1:-1]
+    except Exception:
+        pass
+    return config
+
+def format_display_imports(import_name_str, max_items=3):
+    if not import_name_str:
+        return ""
+    parts = [p.strip() for p in import_name_str.split(',') if p.strip()]
+    if len(parts) > max_items:
+        return ", ".join(parts[:max_items]) + f" ... (+{len(parts) - max_items} more)"
+    return import_name_str
 
 @click.command()
 @click.argument('directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=".")
 @click.option('-o', '--output', type=click.Path(writable=True), help="Save dependency output to specified file (e.g. requirements.txt)")
-@click.option('-f', '--format', 'output_format', type=click.Choice(['text', 'requirements', 'json']), default='text', help="Format of the dependency output: text (terminal table), requirements (standard dependencies), json (JSON data)")
+@click.option('-f', '--format', 'output_format', type=click.Choice(['text', 'requirements', 'json']), default=None, help="Format of the dependency output: text (terminal table), requirements (standard dependencies), json (JSON data)")
 @click.option('-e', '--exclude', multiple=True, help="Extra directory names to exclude (can be specified multiple times)")
 @click.option('-c', '--check', type=click.Path(exists=True, dir_okay=False), help="Audit and compare against specified requirements file to analyze missing and unused dependencies")
 @click.version_option(version=__version__, prog_name=__title__)
@@ -31,10 +94,21 @@ def main(directory, output, output_format, exclude, check):
     # Resolve directory path
     directory_path = os.path.abspath(directory)
     
-    # Process comma-separated excludes
+    # Load configuration from pyproject.toml
+    config = load_config_from_toml(directory_path)
+    
+    # Merge CLI output format and output path with pyproject.toml config fallback
+    output = output or config.get('output')
+    output_format = output_format or config.get('format') or 'text'
+    
+    # Process and merge excludes from both CLI and pyproject.toml
     exclude_list = []
     for item in exclude:
         exclude_list.extend([x.strip() for x in item.split(',') if x.strip()])
+    
+    config_excludes = config.get('exclude', [])
+    for item in config_excludes:
+        exclude_list.append(item.strip())
     
     # Audit dependencies and measure duration
     start_time = time.perf_counter()
@@ -49,14 +123,14 @@ def main(directory, output, output_format, exclude, check):
     check_results = None
     if check:
         reqs = parse_requirements_file(check)
-        audited_pypi_names = {item['pypi_name'].lower().replace('_', '-') for item in results}
+        audited_pypi_names = {normalize_package_name(item['pypi_name']) for item in results}
         
         missing_in_reqs = []
         unused_in_reqs = []
         
         # 1. Missing in requirements.txt (imported but not in requirements)
         for item in results:
-            pypi_norm = item['pypi_name'].lower().replace('_', '-')
+            pypi_norm = normalize_package_name(item['pypi_name'])
             if pypi_norm not in reqs:
                 missing_in_reqs.append(item)
                 
@@ -123,7 +197,7 @@ def main(directory, output, output_format, exclude, check):
             console.print("[yellow]No third-party dependency imports detected.[/yellow]")
         else:
             table = Table(show_header=True, header_style="bold magenta", box=None)
-            table.add_column("Import Name", style="cyan")
+            table.add_column("Import Name", style="cyan", max_width=45)
             table.add_column("PyPI Package", style="green")
             table.add_column("Local Version", style="yellow")
             table.add_column("Status", style="bold")
@@ -131,7 +205,8 @@ def main(directory, output, output_format, exclude, check):
             for item in results:
                 status_str = "[green]Installed[/green]" if item['status'] == 'installed' else "[red]Not Installed[/red]"
                 ver_str = item['version'] if item['version'] else "-"
-                table.add_row(item['import_name'], item['pypi_name'], ver_str, status_str)
+                display_imp = format_display_imports(item['import_name'])
+                table.add_row(display_imp, item['pypi_name'], ver_str, status_str)
                 
             console.print(table)
             
@@ -144,7 +219,8 @@ def main(directory, output, output_format, exclude, check):
                 console.print("[bold red]❌ Missing Dependencies (imported in code but not registered in requirements):[/bold red]")
                 for item in missing_in_reqs:
                     ver_suffix = f" (local version: {item['version']})" if item['version'] else ""
-                    console.print(f"  • [red]{item['pypi_name']}[/red] [dim](introduced by import {item['import_name']}){ver_suffix}[/dim]")
+                    display_imp = format_display_imports(item['import_name'])
+                    console.print(f"  • [red]{item['pypi_name']}[/red] [dim](introduced by import {display_imp}){ver_suffix}[/dim]")
             else:
                 console.print("[green]✔ No missing dependencies found (all imports are registered in requirements)[/green]")
                 

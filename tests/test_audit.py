@@ -128,3 +128,155 @@ def test_resolve_pypi_name():
     assert resolve_pypi_name("requests.adapters", mapping) == ("requests", "requests")
     assert resolve_pypi_name("unknown_package", mapping) == ("unknown_package", "unknown_package")
 
+
+def test_normalize_package_name():
+    from yyds_pip_audit.audit import normalize_package_name
+    assert normalize_package_name("google.cloud.storage") == "google-cloud-storage"
+    assert normalize_package_name("Django") == "django"
+    assert normalize_package_name("ruamel.yaml") == "ruamel-yaml"
+    assert normalize_package_name("ruamel_yaml") == "ruamel-yaml"
+    assert normalize_package_name("ruamel---yaml") == "ruamel-yaml"
+
+
+def test_parse_requirements_file_advanced(tmp_path):
+    from yyds_pip_audit.audit import parse_requirements_file
+    
+    # Create recursive requirements files
+    req_sub = tmp_path / "requirements_sub.txt"
+    req_sub.write_text("requests==2.26.0\npillow>=9.0.0\n", encoding="utf-8")
+    
+    req_main = tmp_path / "requirements.txt"
+    req_main.write_text(
+        f"-r {req_sub.name}\n"
+        "Django==4.0\n"
+        "-e git+https://github.com/psf/requests.git@v2.26.0#egg=requests\n"
+        "google-cloud-storage @ https://github.com/.../google-cloud-storage-1.0.0.tar.gz\n"
+        "numpy; python_version < '3.9'\n",
+        encoding="utf-8"
+    )
+    
+    parsed = parse_requirements_file(str(req_main))
+    
+    # Check that Django, requests, pillow, google-cloud-storage, numpy are all parsed
+    assert "django" in parsed
+    assert "requests" in parsed
+    assert "pillow" in parsed
+    assert "google-cloud-storage" in parsed
+    assert "numpy" in parsed
+    
+    assert parsed["django"]["name"] == "Django"
+    assert parsed["requests"]["name"] == "requests"
+    assert parsed["pillow"]["name"] == "pillow"
+    assert parsed["google-cloud-storage"]["name"] == "google-cloud-storage"
+    assert parsed["numpy"]["name"] == "numpy"
+
+
+def test_parse_gitignore(tmp_path):
+    from yyds_pip_audit.audit import parse_gitignore
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        "# Comments\n"
+        "venv/\n"
+        "custom/path/\n"
+        "*.pyc\n",
+        encoding="utf-8"
+    )
+    
+    patterns = parse_gitignore(str(tmp_path))
+    assert "venv" in patterns
+    assert "custom/path" in patterns
+    assert "*.pyc" in patterns
+
+
+def test_should_exclude_dir():
+    from yyds_pip_audit.audit import should_exclude_dir
+    from pathlib import Path
+    
+    project_path = Path("/home/user/project")
+    exclude_base = {"venv", "data"}
+    exclude_paths = {Path("/home/user/project/src/custom")}
+    
+    assert should_exclude_dir("/home/user/project/venv", "venv", project_path, exclude_base, exclude_paths) is True
+    assert should_exclude_dir("/home/user/project/src/custom", "custom", project_path, exclude_base, exclude_paths) is True
+    assert should_exclude_dir("/home/user/project/src/custom/sub", "sub", project_path, exclude_base, exclude_paths) is True
+    assert should_exclude_dir("/home/user/project/src/other", "other", project_path, exclude_base, exclude_paths) is False
+
+
+def test_load_config_from_toml(tmp_path):
+    from yyds_pip_audit.cli import load_config_from_toml
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.yyds-pip-audit]\n"
+        "exclude = [\"build_assets\", \"custom_dir\"]\n"
+        "format = \"json\"\n"
+        "output = \"audit_report.json\"\n",
+        encoding="utf-8"
+    )
+    
+    config = load_config_from_toml(str(tmp_path))
+    assert config.get("exclude") == ["build_assets", "custom_dir"]
+    assert config.get("format") == "json"
+    assert config.get("output") == "audit_report.json"
+
+
+def test_import_visitor_dynamic():
+    import ast
+    from yyds_pip_audit.audit import ImportVisitor
+    
+    code = """
+import requests
+def load():
+    importlib.import_module('pandas')
+    __import__('numpy')
+    importlib.import_module(dynamic_var) # should be skipped gracefully
+"""
+    tree = ast.parse(code)
+    visitor = ImportVisitor()
+    visitor.visit(tree)
+    
+    assert "requests" in visitor.imports
+    assert "pandas" in visitor.imports
+    assert "numpy" in visitor.imports
+
+
+def test_cli_main(tmp_path):
+    from click.testing import CliRunner
+    from yyds_pip_audit.cli import main
+    
+    # Create pyproject.toml and a python file
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.yyds-pip-audit]\n"
+        "exclude = [\"custom_dir\"]\n",
+        encoding="utf-8"
+    )
+    
+    custom_dir = tmp_path / "custom_dir"
+    custom_dir.mkdir()
+    skipped_file = custom_dir / "skipped.py"
+    skipped_file.write_text("import numpy\n", encoding="utf-8")
+    
+    main_file = tmp_path / "main.py"
+    main_file.write_text("import requests\n", encoding="utf-8")
+    
+    runner = CliRunner()
+    result = runner.invoke(main, [str(tmp_path), "-f", "json"])
+    assert result.exit_code == 0
+    
+    import json
+    data = json.loads(result.output)
+    deps = [d["pypi_name"] for d in data["dependencies"]]
+    assert "requests" in deps
+    assert "numpy" not in deps
+
+
+def test_format_display_imports():
+    from yyds_pip_audit.cli import format_display_imports
+    
+    assert format_display_imports("") == ""
+    assert format_display_imports("requests") == "requests"
+    assert format_display_imports("requests, pillow") == "requests, pillow"
+    assert format_display_imports("a, b, c") == "a, b, c"
+    assert format_display_imports("a, b, c, d") == "a, b, c ... (+1 more)"
+    assert format_display_imports("a, b, c, d, e, f") == "a, b, c ... (+3 more)"
+
