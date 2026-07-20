@@ -4,21 +4,23 @@
 
 It also supports checking your code imports against an existing `requirements.txt` to help you identify missing dependencies or unused packages.
 
-[中文说明 (Chinese README)](README_CN.md)
+[中文说明 (Chinese README)](https://github.com/yyds-fast/yyds-pip-audit/blob/main/README_CN.md)
 
 ## ✨ Features
 
-- **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) to reliably find all top-level imports. Files larger than 2MB are automatically skipped for performance.
-- **Dynamic Import Scanning**: Detects static string imports like `importlib.import_module('pandas')` and `__import__('numpy')`.
+- **AST Parsing**: Statically parses `.py` files using the Python Abstract Syntax Tree (AST) without executing target code. Files larger than 2 MiB are skipped with a warning.
+- **Dynamic Import Scanning**: Detects static string imports through `importlib.import_module()`, `__import__()`, and aliased import helpers.
 - **Smart PyPI Mapping**: Scans package metadata in your active python environment. Supports precise mapping of namespace packages (e.g. `google.cloud.storage` maps to `google-cloud-storage` and is displayed as such under `Import Name` instead of a vague `google`).
-- **Clean Walk**: Automatically ignores directories like `.venv`, `venv`, `node_modules`, `.git`, `.idea` as well as asset/data folders (`data`, `dataset`, `static`, `media`, `assets`, `public`, `uploads`, `logs`, `tmp`, `temp`, `htmlcov` etc.) to prevent directory traversal lag.
-- **Auto `.gitignore` Integration**: Automatically parses and respects `.gitignore` rules in the target directory to skip matches out-of-the-box.
+- **Local Package Detection**: Understands flat projects, script-local modules, and the common `src/` package layout. Additional import roots can be configured explicitly.
+- **Clean Walk**: Automatically ignores virtual environments, caches, VCS metadata, build artifacts, and `node_modules`. Application directories such as `data` or `assets` are scanned unless ignored by Git or configuration, preventing silent dependency omissions.
+- **Auto `.gitignore` Integration**: Uses Git-compatible wildmatch, anchoring, directory, and negation rules through `pathspec`.
 - **`pyproject.toml` Support**: Reads configuration settings from `[tool.yyds-pip-audit]` section in `pyproject.toml`.
 - **Multiple Formats**: Outputs audit results as a beautiful terminal table, standard `requirements.txt` format, or `JSON` format.
 - **Industrial Requirements Checking**: Offers a `--check` flag to scan and compare against a requirements file, revealing missing and unused dependencies. Supports recursive requirements (`-r`), editable requirements (`-e`), PEP 508 direct references (`requests @ https://...`), egg fragments in Git/VCS URLs (`#egg=name`), and environment markers.
 - **PEP 503 Normalization**: Adheres to PyPI standard normalization for package names comparison.
-- **CI-friendly Warning System**: Prints warning logs to stderr and skips files gracefully in case of syntax or permission errors instead of crashing.
-- **Wide Compatibility**: Compatible with Python 3.7+ across all platforms.
+- **CI-friendly Checks**: `--fail-on` can turn missing or unreferenced dependency findings into a non-zero process exit code.
+- **Safe Requirements Export**: Unresolved import-to-package guesses are reported but excluded from requirements output unless explicitly enabled.
+- **Wide Compatibility**: Compatible with Python 3.10+ across all major platforms.
 
 ## 🚀 Installation
 
@@ -35,6 +37,7 @@ pip install -U yyds-pip-audit
 ## 🛠 Usage
 
 Once installed, you can use the `yyds-pip-audit` or `yyds_pip_audit` command.
+It can also be run as `python -m yyds_pip_audit`.
 
 ### 1. Basic Audit
 
@@ -68,6 +71,9 @@ Check if the codebase imports any package not registered in requirements, or if 
 
 ```bash
 yyds-pip-audit --check requirements.txt
+
+# Fail CI when imported packages are missing from requirements
+yyds-pip-audit --check requirements.txt --fail-on missing
 ```
 
 ### 4. Custom Exclude Folders
@@ -85,6 +91,12 @@ yyds-pip-audit -e temp_folder,build_assets
 yyds-pip-audit -e src/data
 ```
 
+For non-standard package layouts, identify one or more import roots explicitly:
+
+```bash
+yyds-pip-audit --source-root backend/src --source-root packages/shared
+```
+
 ### 5. pyproject.toml Configuration
 
 You can write configuration options directly in your project's `pyproject.toml` file under the `[tool.yyds-pip-audit]` section:
@@ -92,11 +104,15 @@ You can write configuration options directly in your project's `pyproject.toml` 
 ```toml
 [tool.yyds-pip-audit]
 exclude = ["build_assets", "custom_dir"]
+source_roots = ["src"]
 format = "json"
 output = "audit_report.json"
+fail_on = "missing"
+evaluate_markers = true
 ```
 
 Command-line parameters always override values from the configuration file.
+Configuration-controlled output paths are resolved relative to the project and cannot escape it.
 
 ## 📋 Command Line Interface
 
@@ -110,7 +126,14 @@ Options:
   -f, --format [text|requirements|json]
                                   Output format: text (colored table), requirements (standard), json (JSON data) [default: text]
   -e, --exclude TEXT              Extra directory names to exclude (can be specified multiple times)
+  --source-root TEXT              Project import root used to identify local packages
   -c, --check PATH                Compare against an existing requirements file to detect missing or unused packages
+  --fail-on [none|missing|unused|any]
+                                  Return exit code 1 for selected comparison findings
+  --include-unresolved / --skip-unresolved
+                                  Include or skip unverified package guesses
+  --evaluate-markers / --ignore-markers
+                                  Select whether environment markers are evaluated
   --version                       Show the version and exit.
   --help                          Show this message and exit.
 ```
@@ -125,8 +148,22 @@ Many PyPI packages use import names that differ from their PyPI name, e.g.:
 
 `yyds-pip-audit` resolves this mapping in two ways:
 1. **Local Metadata Scanning**: Traverses installed libraries in the current Python environment and parses their metadata (`top_level.txt`).
-2. **Hardcoded Fallbacks**: Includes a default mapping mapping for common packages that might not be installed or don't declare `top_level.txt`.
+2. **Hardcoded Fallbacks**: Includes mappings for common packages that might not be installed or don't declare `top_level.txt`.
+
+Each result includes a `resolution` value (`metadata`, `fallback`, or `unresolved`).
+Unresolved names are not exported as installable requirements by default; pass
+`--include-unresolved` only after reviewing them.
+
+## Development
+
+```bash
+pip install -e ".[test,build,lint]"
+pytest --cov --cov-report=term-missing
+ruff check yyds_pip_audit tests
+./build.sh                 # build and validate, without uploading
+./build.sh --upload        # explicit PyPI upload
+```
 
 ## 📄 License
 
-This project is licensed under the [MIT](LICENSE) License.
+This project is licensed under the [MIT](https://github.com/yyds-fast/yyds-pip-audit/blob/main/LICENSE) License.

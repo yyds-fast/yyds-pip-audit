@@ -4,21 +4,23 @@
 
 同时，它还支持与已有的 `requirements.txt` 进行对比，快速发现代码中缺失的依赖，或定位在依赖列表中多余/未使用的包。
 
-[English README](README.md)
+[English README](https://github.com/yyds-fast/yyds-pip-audit/blob/main/README.md)
 
 ## ✨ 特性
 
-- **精准解析**：使用 AST 静态解析，准确抓取 top-level 导入（包含 `import xxx` 和 `from xxx import yyy`）。对于超过 2MB 的超大生成文件自动跳过以提升性能。
-- **动态导入检测**：静态解析 `importlib.import_module('pandas')` 与 `__import__('numpy')` 等以常数字传参的动态导入语句。
+- **精准解析**：使用 AST 静态解析且不会执行目标代码；超过 2 MiB 的文件会跳过并给出告警。
+- **动态导入检测**：支持 `importlib.import_module()`、`__import__()` 及其别名形式的静态字符串导入。
 - **智能映射**：自动扫描当前虚拟环境的包元数据，支持精准映射命名空间包（例如 `google.cloud.storage` 会被解析并精准显示为 `google.cloud.storage` 而非模糊的 `google`）。
-- **杜绝扫描卡顿**：自动过滤常见的开发/虚拟环境文件夹（如 `.venv`、`venv`、`node_modules` 等），并自动忽略大资源目录以提升扫描性能。
-- **`.gitignore` 自动加载集成**：自动读取并解析扫描目录下的 `.gitignore` 规则，实现无感过滤。
+- **本地包识别**：支持平铺布局、脚本同目录模块以及常见的 `src/` 布局，也可显式配置多个导入根目录。
+- **高效遍历**：自动过滤虚拟环境、缓存、版本控制目录、构建产物和 `node_modules`。`data`、`assets` 等应用目录只有在 Git 或配置明确忽略时才跳过，避免静默漏报。
+- **`.gitignore` 自动加载集成**：通过 `pathspec` 支持 Git 风格的通配、锚定、目录和否定规则。
 - **配置文件配置支持**：支持从 `pyproject.toml` 的 `[tool.yyds-pip-audit]` 部分读取排除路径、输出格式及保存路径。
 - **格式灵活**：支持输出为终端着色表格、标准的 `requirements.txt` 格式，或输出为易于集成的 `JSON` 格式。
 - **工业级依赖对比审计**：通过 `--check` 选项对比 `requirements.txt` 审计缺失和未使用依赖。支持递归要求文件（`-r`）、可编辑模式（`-e`）、PEP 508 直接引用（`pkg @ url`）、VCS 依赖末尾的 `#egg=` 命名提取以及环境标记（`;`）过滤。
 - **PEP 503 包名规范化**：依据 PyPI PEP 503 标准规范化包名比对，确保匹配万无一失。
-- **CI 友好型错误系统**：针对损坏文件（语法错误）或不可读文件（权限受限）在 stderr 中输出 warning 告警并优雅跳过，不会引发崩溃。
-- **无感适配**：全面兼容 Python 3.7+ 及所有主流操作系统。
+- **CI 门禁**：可通过 `--fail-on` 在发现缺失或未检测到直接引用的依赖时返回非零退出码。
+- **安全导出**：无法验证的 import/PyPI 同名猜测默认不会写入 requirements，需显式确认后导出。
+- **无感适配**：全面兼容 Python 3.10+ 及主流操作系统。
 
 ## 🚀 安装
 
@@ -35,6 +37,7 @@ pip install -U yyds-pip-audit
 ## 🛠 使用方法
 
 安装完成后，可以在终端中使用 `yyds-pip-audit` 或 `yyds_pip_audit` 命令行工具。
+也可以使用 `python -m yyds_pip_audit` 运行。
 
 ### 1. 基础扫描
 
@@ -68,6 +71,9 @@ yyds-pip-audit -f json -o deps.json
 
 ```bash
 yyds-pip-audit --check requirements.txt
+
+# 缺少依赖时让 CI 失败
+yyds-pip-audit --check requirements.txt --fail-on missing
 ```
 
 ### 4. 忽略特定目录
@@ -85,6 +91,12 @@ yyds-pip-audit -e my_temp_dir,build_assets
 yyds-pip-audit -e src/data
 ```
 
+非标准包布局可显式指定导入根目录：
+
+```bash
+yyds-pip-audit --source-root backend/src --source-root packages/shared
+```
+
 ### 5. 配置文件 pyproject.toml 配置
 
 你可以直接在项目的 `pyproject.toml` 文件的 `[tool.yyds-pip-audit]` 节点下进行全局配置，例如：
@@ -92,11 +104,15 @@ yyds-pip-audit -e src/data
 ```toml
 [tool.yyds-pip-audit]
 exclude = ["build_assets", "custom_dir"]
+source_roots = ["src"]
 format = "json"
 output = "audit_report.json"
+fail_on = "missing"
+evaluate_markers = true
 ```
 
 命令行指定的参数永远会覆盖配置文件中的默认配置。
+配置文件中的输出路径以项目目录为基准，并且不能写到项目目录之外。
 
 ## 📋 命令行参数详解
 
@@ -110,7 +126,14 @@ Options:
   -f, --format [text|requirements|json]
                                   依赖输出的格式: text (终端表格), requirements (标准依赖), json (JSON 数据) [default: text]
   -e, --exclude TEXT              要忽略的额外目录名称 (可多次指定)
+  --source-root TEXT              用于识别本地包的项目导入根目录
   -c, --check PATH                审计对比指定的 requirements 文件，分析缺失和多余依赖
+  --fail-on [none|missing|unused|any]
+                                  对指定的审计问题返回退出码 1
+  --include-unresolved / --skip-unresolved
+                                  包含或跳过未经验证的包名猜测
+  --evaluate-markers / --ignore-markers
+                                  选择是否按当前解释器计算环境标记
   --version                       显示版本并退出。
   --help                          显示此帮助信息并退出。
 ```
@@ -127,6 +150,19 @@ Options:
 1. **本地环境元数据映射**：读取当前 Python 运行环境中所有分发包的 `top_level.txt` 文件，流式构建反向映射关系。
 2. **硬编码兜底配置**：针对未安装在本地或没有提供 `top_level.txt` 的常规坑包进行静态映射字典匹配。
 
+每条结果都会包含 `metadata`、`fallback` 或 `unresolved` 三种 `resolution` 状态。
+`unresolved` 默认不会作为可安装依赖导出，确认后可使用 `--include-unresolved`。
+
+## 开发与构建
+
+```bash
+pip install -e ".[test,build,lint]"
+pytest --cov --cov-report=term-missing
+ruff check yyds_pip_audit tests
+./build.sh                 # 构建并校验，不上传
+./build.sh --upload        # 显式上传 PyPI
+```
+
 ## 📄 开源协议
 
-本项目采用 [MIT](LICENSE) 协议。
+本项目采用 [MIT](https://github.com/yyds-fast/yyds-pip-audit/blob/main/LICENSE) 协议。

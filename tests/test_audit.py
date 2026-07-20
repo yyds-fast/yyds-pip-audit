@@ -1,24 +1,24 @@
 # -*- coding:utf-8 -*-
 
-import os
-import sys
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from yyds_pip_audit.audit import (
-    extract_imports,
-    should_exclude,
-    build_local_import_mapping,
     audit_dependencies,
-    parse_requirements_file
+    build_local_import_mapping,
+    extract_imports,
+    parse_requirements_file,
+    should_exclude,
 )
+
 
 def test_should_exclude():
     assert should_exclude('.venv') is True
     assert should_exclude('venv') is True
     assert should_exclude('src') is False
-    assert should_exclude('data') is True  # Default excludes
+    assert should_exclude('data') is False  # Application directories are scanned
     assert should_exclude('some_package.egg-info') is True
     assert should_exclude('my_custom_dir', exclude_dirs={'my_custom_dir'}) is True
     
@@ -88,6 +88,113 @@ def test_extract_imports_and_local_modules(tmp_path):
     assert "local_module" not in imports
     assert "subpkg" not in imports
 
+
+def test_extract_imports_detects_dynamic_only_files(tmp_path):
+    project_dir = tmp_path / "dynamic_project"
+    project_dir.mkdir()
+    (project_dir / "plugins.py").write_text(
+        "__import__('numpy')\n"
+        "importlib.import_module('pandas')\n",
+        encoding="utf-8",
+    )
+
+    imports = extract_imports(str(project_dir))
+
+    assert "numpy" in imports
+    assert "pandas" in imports
+
+
+def test_extract_imports_supports_src_layout(tmp_path):
+    project_dir = tmp_path / "src_project"
+    package_dir = project_dir / "src" / "my_package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (project_dir / "main.py").write_text(
+        "import my_package\nimport requests\n",
+        encoding="utf-8",
+    )
+
+    imports = extract_imports(str(project_dir))
+
+    assert "my_package" not in imports
+    assert "requests" in imports
+
+
+def test_nested_module_does_not_hide_external_import(tmp_path):
+    project_dir = tmp_path / "shadow_project"
+    tests_dir = project_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "requests.py").write_text("", encoding="utf-8")
+    (project_dir / "main.py").write_text("import requests\n", encoding="utf-8")
+
+    assert "requests" in extract_imports(str(project_dir))
+
+
+def test_gitignore_patterns_are_applied(tmp_path):
+    project_dir = tmp_path / "ignored_project"
+    generated_dir = project_dir / "generated"
+    ignored_dir = project_dir / "ignored_dir"
+    nested_dir = project_dir / "nested"
+    generated_dir.mkdir(parents=True)
+    ignored_dir.mkdir()
+    nested_dir.mkdir()
+    (project_dir / ".gitignore").write_text(
+        "generated/*.py\n"
+        "!generated/keep.py\n"
+        "/root_only.py\n"
+        "ignored_dir/\n",
+        encoding="utf-8",
+    )
+    (generated_dir / "ignored.py").write_text("import numpy\n", encoding="utf-8")
+    (generated_dir / "keep.py").write_text("import pandas\n", encoding="utf-8")
+    (project_dir / "root_only.py").write_text("import flask\n", encoding="utf-8")
+    (nested_dir / "root_only.py").write_text("import requests\n", encoding="utf-8")
+    (ignored_dir / "module.py").write_text("import django\n", encoding="utf-8")
+
+    imports = extract_imports(str(project_dir))
+
+    assert "pandas" in imports
+    assert "requests" in imports
+    assert "numpy" not in imports
+    assert "flask" not in imports
+    assert "django" not in imports
+
+
+def test_xdg_is_not_treated_as_standard_library(tmp_path):
+    (tmp_path / "main.py").write_text("import xdg\n", encoding="utf-8")
+
+    assert "xdg" in extract_imports(str(tmp_path))
+
+
+def test_python_symlink_outside_project_is_skipped(tmp_path):
+    project_dir = tmp_path / "symlink_project"
+    project_dir.mkdir()
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("import should_not_leak\n", encoding="utf-8")
+    try:
+        (project_dir / "linked.py").symlink_to(outside_file)
+    except OSError:
+        pytest.skip("Symbolic links are not available on this platform")
+
+    assert "should_not_leak" not in extract_imports(str(project_dir))
+
+
+def test_audit_marks_unknown_mapping_as_unresolved(tmp_path):
+    package_name = "definitely_yyds_internal_package"
+    (tmp_path / "main.py").write_text(f"import {package_name}\n", encoding="utf-8")
+
+    result = audit_dependencies(str(tmp_path))
+
+    assert result == [
+        {
+            "import_name": package_name,
+            "pypi_name": package_name,
+            "version": None,
+            "status": "not_installed",
+            "resolution": "unresolved",
+        }
+    ]
+
 @patch('importlib.metadata.distributions')
 def test_build_local_import_mapping(mock_dists):
     # Mock some distributions
@@ -114,6 +221,20 @@ def test_build_local_import_mapping(mock_dists):
     assert mapping["requests"] == "requests"
     # Hardcoded fallbacks
     assert mapping["yaml"] == "PyYAML"
+
+
+@patch('importlib.metadata.distributions')
+def test_build_mapping_uses_files_for_nonstandard_name(mock_dists):
+    dist = MagicMock()
+    dist.metadata = {'Name': 'different-distribution-name'}
+    dist.read_text.return_value = None
+    dist.files = [Path('unusual_import/__init__.py')]
+    mock_dists.return_value = [dist]
+
+    mapping = build_local_import_mapping({'unusual_import'})
+
+    assert mapping['unusual_import'] == 'different-distribution-name'
+    assert mapping['onnxruntime'] == 'onnxruntime'
 
 def test_resolve_pypi_name():
     from yyds_pip_audit.audit import resolve_pypi_name
@@ -171,6 +292,30 @@ def test_parse_requirements_file_advanced(tmp_path):
     assert parsed["numpy"]["name"] == "numpy"
 
 
+def test_parse_requirements_handles_hashes_comments_and_markers(tmp_path):
+    requirements = tmp_path / "requirements.txt"
+    included = tmp_path / "included.txt"
+    included.write_text("urllib3==2.2.0  # inline comment\n", encoding="utf-8")
+    requirements.write_text(
+        "-rincluded.txt  # compact include\n"
+        "requests[security]==2.31.0 \\\n"
+        "    --hash=sha256:abc123\n"
+        "never-active; python_version < '0'\n"
+        "always-active; python_version >= '3'\n",
+        encoding="utf-8",
+    )
+
+    all_markers = parse_requirements_file(str(requirements))
+    active_markers = parse_requirements_file(
+        str(requirements),
+        evaluate_markers=True,
+    )
+
+    assert {"urllib3", "requests", "never-active", "always-active"} <= set(all_markers)
+    assert "never-active" not in active_markers
+    assert "always-active" in active_markers
+
+
 def test_parse_gitignore(tmp_path):
     from yyds_pip_audit.audit import parse_gitignore
     gitignore = tmp_path / ".gitignore"
@@ -189,8 +334,9 @@ def test_parse_gitignore(tmp_path):
 
 
 def test_should_exclude_dir():
-    from yyds_pip_audit.audit import should_exclude_dir
     from pathlib import Path
+
+    from yyds_pip_audit.audit import should_exclude_dir
     
     project_path = Path("/home/user/project")
     exclude_base = {"venv", "data"}
@@ -221,6 +367,7 @@ def test_load_config_from_toml(tmp_path):
 
 def test_import_visitor_dynamic():
     import ast
+
     from yyds_pip_audit.audit import ImportVisitor
     
     code = """
@@ -239,8 +386,27 @@ def load():
     assert "numpy" in visitor.imports
 
 
+def test_import_visitor_dynamic_aliases():
+    import ast
+
+    from yyds_pip_audit.audit import ImportVisitor
+
+    tree = ast.parse(
+        "import importlib as il\n"
+        "from importlib import import_module as load\n"
+        "il.import_module('pandas')\n"
+        "load('numpy')\n"
+    )
+    visitor = ImportVisitor()
+    visitor.visit(tree)
+
+    assert "pandas" in visitor.imports
+    assert "numpy" in visitor.imports
+
+
 def test_cli_main(tmp_path):
     from click.testing import CliRunner
+
     from yyds_pip_audit.cli import main
     
     # Create pyproject.toml and a python file
@@ -270,6 +436,73 @@ def test_cli_main(tmp_path):
     assert "numpy" not in deps
 
 
+def test_cli_fail_on_missing(tmp_path):
+    from click.testing import CliRunner
+
+    from yyds_pip_audit.cli import main
+
+    (tmp_path / "main.py").write_text("import requests\n", encoding="utf-8")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        [str(tmp_path), "--check", str(requirements), "--fail-on", "missing", "-f", "json"],
+    )
+
+    assert result.exit_code == 1
+    data = __import__('json').loads(result.output)
+    assert data["check"]["missing"] == ["requests"]
+
+
+def test_config_output_cannot_escape_project(tmp_path):
+    from click.testing import CliRunner
+
+    from yyds_pip_audit.cli import main
+
+    project_dir = tmp_path / "unsafe_project"
+    project_dir.mkdir()
+    (project_dir / "main.py").write_text("import requests\n", encoding="utf-8")
+    (project_dir / "pyproject.toml").write_text(
+        "[tool.yyds-pip-audit]\n"
+        "format = \"json\"\n"
+        "output = \"../escaped.json\"\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, [str(project_dir)])
+
+    assert result.exit_code != 0
+    assert "must stay inside" in result.output
+    assert not (tmp_path / "escaped.json").exists()
+
+
+def test_requirements_export_skips_unresolved_by_default():
+    from yyds_pip_audit.cli import requirements_lines
+
+    results = [
+        {
+            "pypi_name": "requests",
+            "version": "2.31.0",
+            "status": "installed",
+            "resolution": "metadata",
+        },
+        {
+            "pypi_name": "company_internal",
+            "version": None,
+            "status": "not_installed",
+            "resolution": "unresolved",
+        },
+    ]
+
+    safe_lines, skipped = requirements_lines(results)
+    all_lines, _ = requirements_lines(results, include_unresolved=True)
+
+    assert safe_lines == ["requests==2.31.0"]
+    assert skipped == ["company_internal"]
+    assert "company_internal" in all_lines
+
+
 def test_format_display_imports():
     from yyds_pip_audit.cli import format_display_imports
     
@@ -279,4 +512,3 @@ def test_format_display_imports():
     assert format_display_imports("a, b, c") == "a, b, c"
     assert format_display_imports("a, b, c, d") == "a, b, c ... (+1 more)"
     assert format_display_imports("a, b, c, d, e, f") == "a, b, c ... (+3 more)"
-
