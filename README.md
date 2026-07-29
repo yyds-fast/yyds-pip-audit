@@ -13,7 +13,7 @@ It also supports checking your code imports against an existing `requirements.tx
 - **Smart PyPI Mapping**: Scans package metadata in your active python environment. Supports precise mapping of namespace packages (e.g. `google.cloud.storage` maps to `google-cloud-storage` and is displayed as such under `Import Name` instead of a vague `google`).
 - **Local Package Detection**: Understands flat projects, script-local modules, and the common `src/` package layout. Additional import roots can be configured explicitly.
 - **Clean Walk**: Automatically ignores virtual environments, caches, VCS metadata, build artifacts, and `node_modules`. Application directories such as `data` or `assets` are scanned unless ignored by Git or configuration, preventing silent dependency omissions.
-- **Auto `.gitignore` Integration**: Uses Git-compatible wildmatch, anchoring, directory, and negation rules through `pathspec`.
+- **Auto `.gitignore` Integration**: Honors root and nested `.gitignore` files with Git-compatible wildmatch, anchoring, directory, and negation rules through `pathspec`.
 - **`pyproject.toml` Support**: Reads configuration settings from `[tool.yyds-pip-audit]` section in `pyproject.toml`.
 - **Multiple Formats**: Outputs audit results as a beautiful terminal table, standard `requirements.txt` format, or `JSON` format.
 - **Industrial Requirements Checking**: Offers a `--check` flag to scan and compare against a requirements file, revealing missing and unused dependencies. Supports recursive requirements (`-r`), editable requirements (`-e`), PEP 508 direct references (`requests @ https://...`), egg fragments in Git/VCS URLs (`#egg=name`), and environment markers.

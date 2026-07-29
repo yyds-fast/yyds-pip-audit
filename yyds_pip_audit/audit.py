@@ -19,11 +19,25 @@ except ImportError:  # pragma: no cover - compatibility with older pathspec
 
 # Default directories to ignore during traversal
 DEFAULT_EXCLUDES = {
-    '.venv', 'venv', 'env', '.env', '__pycache__', '.git', '.idea',
-    'build', 'dist', 'node_modules', '.pytest_cache', '.tox',
-    '.mypy_cache', '.hg', '.svn', 'egg-info',
-    'htmlcov',
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    "__pycache__",
+    ".git",
+    ".idea",
+    "build",
+    "dist",
+    "node_modules",
+    ".pytest_cache",
+    ".tox",
+    ".mypy_cache",
+    ".hg",
+    ".svn",
+    "egg-info",
+    "htmlcov",
 }
+
 
 def normalize_package_name(name):
     """
@@ -32,15 +46,17 @@ def normalize_package_name(name):
     """
     if not name:
         return ""
-    return re.sub(r'[-_.]+', '-', name).lower()
+    return re.sub(r"[-_.]+", "-", name).lower()
+
 
 class ImportVisitor(ast.NodeVisitor):
     """
     Optimized AST visitor that extracts absolute imports and static dynamic imports.
     """
+
     def __init__(self):
         self.imports = set()
-        self.importlib_aliases = {'importlib'}
+        self.importlib_aliases = {"importlib"}
         self.import_module_aliases = set()
 
     def visit_Module(self, node):
@@ -49,19 +65,19 @@ class ImportVisitor(ast.NodeVisitor):
         for child in ast.walk(node):
             if isinstance(child, ast.Import):
                 for alias in child.names:
-                    if alias.name == 'importlib':
+                    if alias.name == "importlib":
                         self.importlib_aliases.add(alias.asname or alias.name)
             elif isinstance(child, ast.ImportFrom):
-                if child.level == 0 and child.module == 'importlib':
+                if child.level == 0 and child.module == "importlib":
                     for alias in child.names:
-                        if alias.name == 'import_module':
+                        if alias.name == "import_module":
                             self.import_module_aliases.add(alias.asname or alias.name)
         self.generic_visit(node)
 
     def visit_Import(self, node):
         for alias in node.names:
             self.imports.add(alias.name)
-            if alias.name == 'importlib':
+            if alias.name == "importlib":
                 self.importlib_aliases.add(alias.asname or alias.name)
 
     def visit_ImportFrom(self, node):
@@ -69,44 +85,48 @@ class ImportVisitor(ast.NodeVisitor):
             for alias in node.names:
                 # Store full import path for namespace matching (e.g. google.cloud.storage)
                 self.imports.add(f"{node.module}.{alias.name}")
-                if node.module == 'importlib' and alias.name == 'import_module':
+                if node.module == "importlib" and alias.name == "import_module":
                     self.import_module_aliases.add(alias.asname or alias.name)
 
     def visit_Call(self, node):
         # Handle importlib.import_module('module_name')
         if isinstance(node.func, ast.Attribute):
-            if (isinstance(node.func.value, ast.Name) and 
-                node.func.value.id in self.importlib_aliases and
-                node.func.attr == 'import_module'):
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.importlib_aliases
+                and node.func.attr == "import_module"
+            ):
                 if node.args:
                     val = None
                     if isinstance(node.args[0], ast.Constant):
                         val = node.args[0].value
-                    elif hasattr(ast, 'Str') and isinstance(node.args[0], ast.Str):
+                    elif hasattr(ast, "Str") and isinstance(node.args[0], ast.Str):
                         val = node.args[0].s
                     if isinstance(val, str):
                         self.imports.add(val)
         # Handle __import__('module_name')
-        elif (isinstance(node.func, ast.Name) and
-              (node.func.id == '__import__' or node.func.id in self.import_module_aliases)):
+        elif isinstance(node.func, ast.Name) and (
+            node.func.id == "__import__" or node.func.id in self.import_module_aliases
+        ):
             if node.args:
                 val = None
                 if isinstance(node.args[0], ast.Constant):
                     val = node.args[0].value
-                elif hasattr(ast, 'Str') and isinstance(node.args[0], ast.Str):
+                elif hasattr(ast, "Str") and isinstance(node.args[0], ast.Str):
                     val = node.args[0].s
                 if isinstance(val, str):
                     self.imports.add(val)
-        
+
         self.generic_visit(node)
 
+
 def _read_gitignore_lines(project_dir):
-    gitignore_path = Path(project_dir) / '.gitignore'
+    gitignore_path = Path(project_dir) / ".gitignore"
     if not gitignore_path.is_file():
         return []
 
     try:
-        return gitignore_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        return gitignore_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError as exc:
         print(f"Warning: Failed to read {gitignore_path}: {exc}", file=sys.stderr)
         return []
@@ -119,22 +139,40 @@ def parse_gitignore(project_dir):
     patterns = []
     for line in _read_gitignore_lines(project_dir):
         line = line.strip()
-        if not line or line.startswith('#'):
+        if not line or line.startswith("#"):
             continue
         # Preserve the historical public return value. Matching itself is done
-        # by PathSpec using the original lines in _build_gitignore_spec().
-        if line.endswith('/'):
+        # by PathSpec using the original lines in _build_gitignore_spec_from_lines().
+        if line.endswith("/"):
             line = line[:-1]
-        patterns.append(line.replace('\\', '/'))
+        patterns.append(line.replace("\\", "/"))
     return patterns
 
 
-def _build_gitignore_spec(project_dir):
+def _build_gitignore_spec_from_lines(lines):
     """Build a matcher implementing Git's wildmatch and negation rules."""
-    lines = _read_gitignore_lines(project_dir)
     if GitIgnoreSpec is not None:
         return GitIgnoreSpec.from_lines(lines)
-    return PathSpec.from_lines('gitwildmatch', lines)
+    return PathSpec.from_lines("gitwildmatch", lines)
+
+
+def _scope_gitignore_line(line, relative_dir):
+    """Translate a nested .gitignore rule to a project-root-relative rule."""
+    if not line or line.startswith("#"):
+        return line
+
+    is_negated = line.startswith("!")
+    prefix = "!" if is_negated else ""
+    pattern = line[1:] if is_negated else line
+
+    if pattern.startswith("/"):
+        pattern = pattern[1:]
+    elif "/" not in pattern.rstrip("/"):
+        # A pattern without a slash applies at every depth below its .gitignore.
+        pattern = f"**/{pattern}"
+
+    return f"{prefix}{relative_dir.as_posix()}/{pattern}"
+
 
 def should_exclude(dir_name, rel_path_str="", exclude_dirs=None):
     """
@@ -142,27 +180,30 @@ def should_exclude(dir_name, rel_path_str="", exclude_dirs=None):
     """
     if exclude_dirs is None:
         exclude_dirs = DEFAULT_EXCLUDES
-    
+
     # Normalize relative path separators to forward slashes for cross-platform consistency
-    norm_rel_path = rel_path_str.replace('\\', '/')
-    
+    norm_rel_path = rel_path_str.replace("\\", "/")
+
     # Check both the directory name and relative path against exclusions
     if dir_name in exclude_dirs or norm_rel_path in exclude_dirs:
         return True
-    
+
     # Substring / pattern matching
-    if dir_name.endswith('.egg-info'):
+    if dir_name.endswith(".egg-info"):
         return True
-        
+
     return False
 
-def should_exclude_dir(dir_full_path, dir_name, project_path, exclude_base_names, exclude_absolute_paths):
+
+def should_exclude_dir(
+    dir_full_path, dir_name, project_path, exclude_base_names, exclude_absolute_paths
+):
     """
     Determine if a directory should be excluded from search.
     """
-    if dir_name in exclude_base_names or dir_name.endswith('.egg-info'):
+    if dir_name in exclude_base_names or dir_name.endswith(".egg-info"):
         return True
-    
+
     # Check if absolute path matches or starts with any of the excluded absolute paths
     try:
         dir_abs = Path(dir_full_path).resolve()
@@ -171,8 +212,9 @@ def should_exclude_dir(dir_full_path, dir_name, project_path, exclude_base_names
                 return True
     except OSError:
         return True
-        
+
     return False
+
 
 def _module_paths_from_distribution(dist):
     """Extract importable Python module paths from distribution RECORD data."""
@@ -183,24 +225,24 @@ def _module_paths_from_distribution(dist):
 
     module_paths = []
     for file_path in dist_files:
-        path_str = str(file_path).replace('\\', '/')
-        if not path_str.endswith('.py'):
+        path_str = str(file_path).replace("\\", "/")
+        if not path_str.endswith(".py"):
             continue
 
         parts = list(Path(path_str).parts)
         if any(
-            part.startswith('.') or part.endswith(('.dist-info', '.egg-info'))
+            part.startswith(".") or part.endswith((".dist-info", ".egg-info"))
             for part in parts
         ):
             continue
 
-        if parts[-1] == '__init__.py':
+        if parts[-1] == "__init__.py":
             parts.pop()
         else:
             parts[-1] = Path(parts[-1]).stem
 
         if parts and all(part.isidentifier() for part in parts):
-            module_paths.append('.'.join(parts))
+            module_paths.append(".".join(parts))
 
     return module_paths
 
@@ -213,39 +255,50 @@ def build_local_import_mapping(imported_top_levels=None, include_sources=False):
     """
     mapping = {}
     deferred_distributions = []
-    
-    # Traverse all installed distributions in the active python environment
+
+    # Traverse all installed distributions in the active python environment.
+    # top_level.txt is substantially cheaper than parsing METADATA. When a
+    # project import set is available, use it to skip unrelated distributions
+    # before asking for their package names.
     for dist in metadata.distributions():
+        declared_top_levels = []
         try:
-            # Metadata keys can be normalized
-            package_name = dist.metadata.get('Name') or dist.name
+            top_txt = dist.read_text("top_level.txt")
+            if top_txt:
+                declared_top_levels = [
+                    line.strip()
+                    for line in top_txt.splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
+        except Exception:
+            pass
+
+        if (
+            imported_top_levels is not None
+            and declared_top_levels
+            and not any(
+                top_level in imported_top_levels for top_level in declared_top_levels
+            )
+        ):
+            continue
+
+        try:
+            # Metadata keys can be normalized. Defer this expensive lookup
+            # until after the cheap top-level filtering above.
+            package_name = dist.metadata.get("Name") or dist.name
             if not package_name:
                 continue
         except Exception:
             continue
 
-        # Get top-level names for this package to check if it is relevant.
-        declared_top_levels = []
-        try:
-            top_txt = dist.read_text('top_level.txt')
-            if top_txt:
-                declared_top_levels = [
-                    line.strip()
-                    for line in top_txt.splitlines()
-                    if line.strip() and not line.startswith('#')
-                ]
-        except Exception:
-            pass
-
         top_levels = declared_top_levels or [
-            package_name.lower().replace('-', '_'),
+            package_name.lower().replace("-", "_"),
             package_name,
         ]
 
         # Optimization: skip packages that are not imported by the project at all
-        if (
-            imported_top_levels is not None
-            and not any(top_level in imported_top_levels for top_level in top_levels)
+        if imported_top_levels is not None and not any(
+            top_level in imported_top_levels for top_level in top_levels
         ):
             # A distribution without top_level.txt can expose a completely
             # different import name. Defer its RECORD scan until we know that
@@ -263,7 +316,7 @@ def build_local_import_mapping(imported_top_levels=None, include_sources=False):
             for tl in top_levels:
                 mapping[tl] = package_name
 
-    mapping_sources = {module_path: 'metadata' for module_path in mapping}
+    mapping_sources = {module_path: "metadata" for module_path in mapping}
 
     # Common PyPI packages with non-standard import/package names
     hardcoded_fallback = {
@@ -344,7 +397,7 @@ def build_local_import_mapping(imported_top_levels=None, include_sources=False):
         "jwt": "PyJWT",
         "kombu": "kombu",
         "kubernetes": "kubernetes",
-        "command": "click", # Fallback for CLI/command packages
+        "command": "click",  # Fallback for CLI/command packages
         "langdetect": "langdetect",
         "langid": "langid",
         "lz4": "lz4",
@@ -437,33 +490,34 @@ def build_local_import_mapping(imported_top_levels=None, include_sources=False):
         "zmq": "pyzmq",
         "zstandard": "zstandard",
     }
-    
+
     for k, v in hardcoded_fallback.items():
         if k not in mapping:
             mapping[k] = v
-            mapping_sources[k] = 'fallback'
+            mapping_sources[k] = "fallback"
 
     # Resolve only genuinely unknown imports through the expensive RECORD path.
     # Known fallbacks avoid a full environment scan, while unknown non-standard
     # package names can still be proven from installed distribution metadata.
     if imported_top_levels is not None:
-        mapped_top_levels = {module_path.split('.')[0] for module_path in mapping}
+        mapped_top_levels = {module_path.split(".")[0] for module_path in mapping}
         unresolved_top_levels = set(imported_top_levels) - mapped_top_levels
         if unresolved_top_levels:
             for dist, package_name in deferred_distributions:
                 module_paths = _module_paths_from_distribution(dist)
                 distribution_top_levels = {
-                    module_path.split('.')[0] for module_path in module_paths
+                    module_path.split(".")[0] for module_path in module_paths
                 }
                 if not distribution_top_levels.intersection(unresolved_top_levels):
                     continue
                 for module_path in module_paths:
                     mapping[module_path] = package_name
-                    mapping_sources[module_path] = 'metadata'
+                    mapping_sources[module_path] = "metadata"
 
     if include_sources:
         return mapping, mapping_sources
     return mapping
+
 
 def _is_within(path, parent):
     try:
@@ -483,8 +537,8 @@ def _resolve_source_roots(project_path, source_roots=None):
 
     # src/ is the dominant modern packaging layout, so recognize it without
     # requiring configuration while retaining flat-layout behavior.
-    if not configured_roots and (project_path / 'src').is_dir():
-        configured_roots.append('src')
+    if not configured_roots and (project_path / "src").is_dir():
+        configured_roots.append("src")
 
     for root in configured_roots:
         candidate = Path(root)
@@ -494,7 +548,9 @@ def _resolve_source_roots(project_path, source_roots=None):
         if not _is_within(candidate, project_path):
             raise ValueError(f"Source root must stay inside the project: {root}")
         if not candidate.is_dir():
-            raise ValueError(f"Source root does not exist or is not a directory: {root}")
+            raise ValueError(
+                f"Source root does not exist or is not a directory: {root}"
+            )
         if candidate not in roots:
             roots.append(candidate)
 
@@ -516,11 +572,11 @@ def _prepare_exclusions(project_path, exclude_dirs=None):
             absolute_paths.add(item_path.resolve())
             continue
 
-        normalized = item.replace('\\', '/')
-        while normalized.startswith('./'):
+        normalized = item.replace("\\", "/")
+        while normalized.startswith("./"):
             normalized = normalized[2:]
-        normalized = normalized.strip('/')
-        if '/' in normalized:
+        normalized = normalized.strip("/")
+        if "/" in normalized:
             relative_paths.add(normalized)
         else:
             base_names.add(normalized)
@@ -529,7 +585,7 @@ def _prepare_exclusions(project_path, exclude_dirs=None):
 
 
 def _matches_relative_exclusion(relative_path, excluded_paths):
-    path_str = relative_path.as_posix().strip('/')
+    path_str = relative_path.as_posix().strip("/")
     return any(
         path_str == excluded or path_str.startswith(f"{excluded}/")
         for excluded in excluded_paths
@@ -541,7 +597,7 @@ def _index_local_modules(python_files, project_path):
     entries = defaultdict(set)
 
     for file_path in python_files:
-        if file_path.name != '__init__.py' and file_path.stem.isidentifier():
+        if file_path.name != "__init__.py" and file_path.stem.isidentifier():
             entries[file_path.parent].add(file_path.stem)
 
         current = file_path.parent
@@ -559,12 +615,13 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
     支持 .gitignore 自动集成与绝对/相对路径匹配。
     """
     project_path = Path(project_dir).resolve()
-    
+
     import_roots = _resolve_source_roots(project_path, source_roots)
     exclude_base_names, exclude_relative_paths, exclude_absolute_paths = (
         _prepare_exclusions(project_path, exclude_dirs)
     )
-    gitignore_spec = _build_gitignore_spec(project_path)
+    gitignore_lines = _read_gitignore_lines(project_path)
+    gitignore_spec = _build_gitignore_spec_from_lines(gitignore_lines)
 
     imported_occurrences = []
     python_files = []
@@ -573,13 +630,22 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
     # parsed, while negated Git rules remain respected by PathSpec.
     for root, dirs, files in os.walk(project_path):
         root_path = Path(root)
+        if root_path != project_path:
+            nested_lines = _read_gitignore_lines(root_path)
+            if nested_lines:
+                relative_root = root_path.relative_to(project_path)
+                gitignore_lines.extend(
+                    _scope_gitignore_line(line, relative_root) for line in nested_lines
+                )
+                gitignore_spec = _build_gitignore_spec_from_lines(gitignore_lines)
+
         pruned_dirs = []
         for d in dirs:
             dir_path = root_path / d
             relative_dir = dir_path.relative_to(project_path)
             relative_dir_str = f"{relative_dir.as_posix()}/"
 
-            if d in exclude_base_names or d.endswith('.egg-info'):
+            if d in exclude_base_names or d.endswith(".egg-info"):
                 continue
             if _matches_relative_exclusion(relative_dir, exclude_relative_paths):
                 continue
@@ -598,13 +664,13 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
             ):
                 continue
             pruned_dirs.append(d)
-            
+
         # 原地剪枝
         dirs[:] = pruned_dirs
-        
+
         for file in files:
             # Avoid resolving and stat-ing non-Python assets in large projects.
-            if not file.endswith('.py'):
+            if not file.endswith(".py"):
                 continue
 
             file_path = root_path / file
@@ -619,10 +685,16 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
             try:
                 resolved_file = file_path.resolve()
             except (OSError, RuntimeError) as exc:
-                print(f"Warning: Failed to resolve file {file_path}: {exc}", file=sys.stderr)
+                print(
+                    f"Warning: Failed to resolve file {file_path}: {exc}",
+                    file=sys.stderr,
+                )
                 continue
             if not _is_within(resolved_file, project_path):
-                print(f"Warning: Skipping Python symlink outside project: {file_path}", file=sys.stderr)
+                print(
+                    f"Warning: Skipping Python symlink outside project: {file_path}",
+                    file=sys.stderr,
+                )
                 continue
             if any(
                 resolved_file == excluded or _is_within(resolved_file, excluded)
@@ -634,7 +706,10 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
 
             try:
                 if file_path.stat().st_size > 2 * 1024 * 1024:
-                    print(f"Warning: Skipping Python file larger than 2 MiB: {file_path}", file=sys.stderr)
+                    print(
+                        f"Warning: Skipping Python file larger than 2 MiB: {file_path}",
+                        file=sys.stderr,
+                    )
                     continue
 
                 # tokenize.open honors PEP 263 encoding declarations.
@@ -648,11 +723,18 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
                     (import_name, file_path) for import_name in visitor.imports
                 )
             except SyntaxError as exc:
-                print(f"Warning: Syntax error in file {file_path}: {exc}", file=sys.stderr)
+                print(
+                    f"Warning: Syntax error in file {file_path}: {exc}", file=sys.stderr
+                )
             except PermissionError as exc:
-                print(f"Warning: Permission denied for file {file_path}: {exc}", file=sys.stderr)
+                print(
+                    f"Warning: Permission denied for file {file_path}: {exc}",
+                    file=sys.stderr,
+                )
             except (OSError, UnicodeError) as exc:
-                print(f"Warning: Failed to read file {file_path}: {exc}", file=sys.stderr)
+                print(
+                    f"Warning: Failed to read file {file_path}: {exc}", file=sys.stderr
+                )
 
     # Filter standard-library and project-local imports after the complete local
     # module index is available.
@@ -660,19 +742,23 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
     stdlib.update(sys.builtin_module_names)
 
     local_entries = _index_local_modules(python_files, project_path)
-    
-    # 动态排除项目自身的模块/包名，防止自我扫描干扰
-    project_name = project_path.name
-    ignored_project_names = {
-        '', 
-        project_name, 
-        project_name.replace('-', '_'),
-        normalize_package_name(project_name)
-    }
-        
+
+    # A project-root package may be imported by its directory name when the
+    # project is run from its parent. Do not apply this fallback to ordinary
+    # directories: a directory called "requests" can legitimately import the
+    # third-party requests distribution.
+    ignored_project_names = set()
+    if (project_path / "__init__.py").is_file():
+        project_name = project_path.name
+        ignored_project_names = {
+            project_name,
+            project_name.replace("-", "_"),
+            normalize_package_name(project_name),
+        }
+
     filtered_imports = set()
     for imp, source_file in imported_occurrences:
-        first_comp = imp.split('.')[0]
+        first_comp = imp.split(".")[0]
         is_local = first_comp in local_entries[source_file.parent]
         if not is_local:
             is_local = any(first_comp in local_entries[root] for root in import_roots)
@@ -683,40 +769,42 @@ def extract_imports(project_dir, exclude_dirs=None, source_roots=None):
             and first_comp not in ignored_project_names
         ):
             filtered_imports.add(imp)
-            
+
     return sorted(list(filtered_imports))
+
 
 def resolve_pypi_name(import_path, import_to_pypi):
     """
     通过最长前缀匹配，将导入路径解析为 PyPI 包名。
     返回 (pypi_name, matched_prefix)
     """
-    parts = import_path.split('.')
+    parts = import_path.split(".")
     while parts:
         candidate = ".".join(parts)
         if candidate in import_to_pypi:
             return import_to_pypi[candidate], candidate
         parts.pop()
     # 兜底截取首个模块名
-    first_comp = import_path.split('.')[0]
+    first_comp = import_path.split(".")[0]
     return first_comp, first_comp
 
 
 def resolve_pypi_details(import_path, import_to_pypi, mapping_sources):
     """Resolve a package and expose whether metadata or a fallback proved it."""
-    parts = import_path.split('.')
+    parts = import_path.split(".")
     while parts:
-        candidate = '.'.join(parts)
+        candidate = ".".join(parts)
         if candidate in import_to_pypi:
             return (
                 import_to_pypi[candidate],
                 candidate,
-                mapping_sources.get(candidate, 'metadata'),
+                mapping_sources.get(candidate, "metadata"),
             )
         parts.pop()
 
-    first_comp = import_path.split('.')[0]
-    return first_comp, first_comp, 'unresolved'
+    first_comp = import_path.split(".")[0]
+    return first_comp, first_comp, "unresolved"
+
 
 def audit_dependencies(project_dir, exclude_dirs=None, source_roots=None):
     """
@@ -724,12 +812,15 @@ def audit_dependencies(project_dir, exclude_dirs=None, source_roots=None):
     Groups results by PyPI package name to handle namespace packages and duplicate submodules.
     """
     imported_mods = extract_imports(project_dir, exclude_dirs, source_roots)
-    imported_top_levels = {mod.split('.')[0] for mod in imported_mods}
+    if not imported_mods:
+        return []
+
+    imported_top_levels = {mod.split(".")[0] for mod in imported_mods}
     import_to_pypi, mapping_sources = build_local_import_mapping(
         imported_top_levels,
         include_sources=True,
     )
-    
+
     grouped_results = {}
     for mod in imported_mods:
         pypi_name, import_name, resolution = resolve_pypi_details(
@@ -738,19 +829,20 @@ def audit_dependencies(project_dir, exclude_dirs=None, source_roots=None):
             mapping_sources,
         )
         normalized_pypi_name = normalize_package_name(pypi_name)
-        
+
         if normalized_pypi_name in grouped_results:
             grouped_results[normalized_pypi_name]["import_names"].add(import_name)
-            resolution_rank = {'unresolved': 0, 'fallback': 1, 'metadata': 2}
-            if resolution_rank[resolution] > resolution_rank[
-                grouped_results[normalized_pypi_name]["resolution"]
-            ]:
+            resolution_rank = {"unresolved": 0, "fallback": 1, "metadata": 2}
+            if (
+                resolution_rank[resolution]
+                > resolution_rank[grouped_results[normalized_pypi_name]["resolution"]]
+            ):
                 grouped_results[normalized_pypi_name]["resolution"] = resolution
             continue
-            
+
         installed_version = None
         status = "not_installed"
-        
+
         try:
             installed_version = metadata.version(pypi_name)
             status = "installed"
@@ -772,7 +864,7 @@ def audit_dependencies(project_dir, exclude_dirs=None, source_roots=None):
                         pypi_name = normalized_import_name
                     except metadata.PackageNotFoundError:
                         pass
-                
+
         grouped_results[normalized_pypi_name] = {
             "import_names": {import_name},
             "pypi_name": pypi_name,
@@ -780,41 +872,44 @@ def audit_dependencies(project_dir, exclude_dirs=None, source_roots=None):
             "status": status,
             "resolution": resolution,
         }
-        
+
     results = []
     for info in grouped_results.values():
-        results.append({
-            "import_name": ", ".join(sorted(list(info["import_names"]))),
-            "pypi_name": info["pypi_name"],
-            "version": info["version"],
-            "status": info["status"],
-            "resolution": info["resolution"],
-        })
-        
+        results.append(
+            {
+                "import_name": ", ".join(sorted(list(info["import_names"]))),
+                "pypi_name": info["pypi_name"],
+                "version": info["version"],
+                "status": info["status"],
+                "resolution": info["resolution"],
+            }
+        )
+
     return results
+
 
 def _requirement_logical_lines(file_obj):
     """Join pip-style line continuations while preserving the original text."""
-    pending = ''
+    pending = ""
     for physical_line in file_obj:
-        stripped = physical_line.rstrip('\r\n')
-        if stripped.rstrip().endswith('\\'):
-            pending += stripped.rstrip()[:-1] + ' '
+        stripped = physical_line.rstrip("\r\n")
+        if stripped.rstrip().endswith("\\"):
+            pending += stripped.rstrip()[:-1] + " "
             continue
         yield pending + stripped
-        pending = ''
+        pending = ""
     if pending:
         yield pending
 
 
 def _included_requirement_path(line):
-    for prefix in ('-r ', '--requirement '):
+    for prefix in ("-r ", "--requirement "):
         if line.startswith(prefix):
-            return line[len(prefix):].strip()
-    if line.startswith('-r') and len(line) > 2:
+            return line[len(prefix) :].strip()
+    if line.startswith("-r") and len(line) > 2:
         return line[2:].strip()
-    if line.startswith('--requirement='):
-        return line.split('=', 1)[1].strip()
+    if line.startswith("--requirement="):
+        return line.split("=", 1)[1].strip()
     return None
 
 
@@ -825,22 +920,24 @@ def parse_requirements_file(file_path, visited=None, evaluate_markers=False):
     """
     if visited is None:
         visited = set()
-        
+
     packages = {}
     file_path = os.path.abspath(file_path)
-    if file_path in visited or not os.path.exists(file_path):
+    if file_path in visited:
         return packages
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Requirements file does not exist: {file_path}")
     visited.add(file_path)
-    
+
     base_dir = os.path.dirname(file_path)
-    
-    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in _requirement_logical_lines(f):
             line_strip = line.strip()
-            if not line_strip or line_strip.startswith('#'):
+            if not line_strip or line_strip.startswith("#"):
                 continue
 
-            directive_line = re.sub(r'\s+#.*$', '', line_strip).strip()
+            directive_line = re.sub(r"\s+#.*$", "", line_strip).strip()
 
             included_path = _included_requirement_path(directive_line)
             if included_path:
@@ -855,11 +952,11 @@ def parse_requirements_file(file_path, visited=None, evaluate_markers=False):
                 continue
 
             # Skip other options like -c, -f, -i, --index-url etc.
-            if line_strip.startswith('-'):
-                if line_strip.startswith('-e ') or line_strip.startswith('--editable '):
+            if line_strip.startswith("-"):
+                if line_strip.startswith("-e ") or line_strip.startswith("--editable "):
                     pkg_line = line_strip.split(None, 1)[1].strip()
-                elif line_strip.startswith('--editable='):
-                    pkg_line = line_strip.split('=', 1)[1].strip()
+                elif line_strip.startswith("--editable="):
+                    pkg_line = line_strip.split("=", 1)[1].strip()
                 else:
                     continue
             else:
@@ -867,14 +964,14 @@ def parse_requirements_file(file_path, visited=None, evaluate_markers=False):
 
             # Remove pip hashes and comments, but preserve URL fragments such as
             # #egg=package which have no preceding whitespace.
-            pkg_line = re.sub(r'\s+--hash(?:=|\s+)\S+', '', pkg_line).strip()
-            pkg_line = re.sub(r'\s+#.*$', '', pkg_line).strip()
+            pkg_line = re.sub(r"\s+--hash(?:=|\s+)\S+", "", pkg_line).strip()
+            pkg_line = re.sub(r"\s+#.*$", "", pkg_line).strip()
 
             pkg_name = None
             requirement = None
-            if '#egg=' in pkg_line:
-                egg_part = pkg_line.split('#egg=', 1)[1]
-                pkg_name = re.split(r'[;&]', egg_part)[0].strip()
+            if "#egg=" in pkg_line:
+                egg_part = pkg_line.split("#egg=", 1)[1]
+                pkg_name = re.split(r"[;&]", egg_part)[0].strip()
             else:
                 try:
                     requirement = Requirement(pkg_line)
@@ -894,8 +991,5 @@ def parse_requirements_file(file_path, visited=None, evaluate_markers=False):
 
             if pkg_name:
                 norm_name = normalize_package_name(pkg_name)
-                packages[norm_name] = {
-                    "raw": line_strip,
-                    "name": pkg_name
-                }
+                packages[norm_name] = {"raw": line_strip, "name": pkg_name}
     return packages

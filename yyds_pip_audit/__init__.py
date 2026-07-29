@@ -11,5 +11,5 @@ __all__ = [
     "__description__",
     "build_local_import_mapping",
     "extract_imports",
-    "audit_dependencies"
+    "audit_dependencies",
 ]

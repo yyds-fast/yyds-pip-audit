@@ -15,16 +15,17 @@ from yyds_pip_audit.audit import (
 
 
 def test_should_exclude():
-    assert should_exclude('.venv') is True
-    assert should_exclude('venv') is True
-    assert should_exclude('src') is False
-    assert should_exclude('data') is False  # Application directories are scanned
-    assert should_exclude('some_package.egg-info') is True
-    assert should_exclude('my_custom_dir', exclude_dirs={'my_custom_dir'}) is True
-    
+    assert should_exclude(".venv") is True
+    assert should_exclude("venv") is True
+    assert should_exclude("src") is False
+    assert should_exclude("data") is False  # Application directories are scanned
+    assert should_exclude("some_package.egg-info") is True
+    assert should_exclude("my_custom_dir", exclude_dirs={"my_custom_dir"}) is True
+
     # Test relative path matching
-    assert should_exclude('data', 'src/data', exclude_dirs={'src/data'}) is True
-    assert should_exclude('other', 'src/other', exclude_dirs={'src/data'}) is False
+    assert should_exclude("data", "src/data", exclude_dirs={"src/data"}) is True
+    assert should_exclude("other", "src/other", exclude_dirs={"src/data"}) is False
+
 
 def test_parse_requirements_file(tmp_path):
     req_file = tmp_path / "requirements.txt"
@@ -34,9 +35,9 @@ def test_parse_requirements_file(tmp_path):
         "# this is a comment\n"
         "   \n"
         "unused-package==1.0.0\n",
-        encoding="utf-8"
+        encoding="utf-8",
     )
-    
+
     parsed = parse_requirements_file(str(req_file))
     assert "opencv-python" in parsed
     assert "pyyaml" in parsed
@@ -44,11 +45,12 @@ def test_parse_requirements_file(tmp_path):
     assert parsed["opencv-python"]["name"] == "opencv-python"
     assert parsed["pyyaml"]["raw"] == "PyYAML>=6.0"
 
+
 def test_extract_imports_and_local_modules(tmp_path):
     # Create a mock project structure
     project_dir = tmp_path / "my_project"
     project_dir.mkdir()
-    
+
     # Create main.py
     main_file = project_dir / "main.py"
     main_file.write_text(
@@ -58,13 +60,13 @@ def test_extract_imports_and_local_modules(tmp_path):
         "from PIL import Image\n"
         "import local_module\n"
         "from subpkg import helper\n",
-        encoding="utf-8"
+        encoding="utf-8",
     )
-    
+
     # Create local_module.py
     local_module = project_dir / "local_module.py"
     local_module.write_text("def run(): pass\n", encoding="utf-8")
-    
+
     # Create subpkg/helper.py
     subpkg = project_dir / "subpkg"
     subpkg.mkdir()
@@ -72,15 +74,15 @@ def test_extract_imports_and_local_modules(tmp_path):
     subpkg_init.write_text("", encoding="utf-8")
     subpkg_helper = subpkg / "helper.py"
     subpkg_helper.write_text("def help(): pass\n", encoding="utf-8")
-    
+
     # Scan
     imports = extract_imports(str(project_dir))
-    
+
     # Expected results:
     # - 'os', 'sys' are standard libraries, so they should be filtered out.
     # - 'local_module', 'subpkg' are local modules/packages, so they should be filtered out.
     # - 'requests' and 'PIL' are third-party, so they should be present.
-    
+
     assert "requests" in imports
     assert "PIL.Image" in imports
     assert "os" not in imports
@@ -93,8 +95,7 @@ def test_extract_imports_detects_dynamic_only_files(tmp_path):
     project_dir = tmp_path / "dynamic_project"
     project_dir.mkdir()
     (project_dir / "plugins.py").write_text(
-        "__import__('numpy')\n"
-        "importlib.import_module('pandas')\n",
+        "__import__('numpy')\nimportlib.import_module('pandas')\n",
         encoding="utf-8",
     )
 
@@ -130,6 +131,14 @@ def test_nested_module_does_not_hide_external_import(tmp_path):
     assert "requests" in extract_imports(str(project_dir))
 
 
+def test_project_directory_name_does_not_hide_external_import(tmp_path):
+    project_dir = tmp_path / "requests"
+    project_dir.mkdir()
+    (project_dir / "main.py").write_text("import requests\n", encoding="utf-8")
+
+    assert "requests" in extract_imports(str(project_dir))
+
+
 def test_gitignore_patterns_are_applied(tmp_path):
     project_dir = tmp_path / "ignored_project"
     generated_dir = project_dir / "generated"
@@ -139,10 +148,7 @@ def test_gitignore_patterns_are_applied(tmp_path):
     ignored_dir.mkdir()
     nested_dir.mkdir()
     (project_dir / ".gitignore").write_text(
-        "generated/*.py\n"
-        "!generated/keep.py\n"
-        "/root_only.py\n"
-        "ignored_dir/\n",
+        "generated/*.py\n!generated/keep.py\n/root_only.py\nignored_dir/\n",
         encoding="utf-8",
     )
     (generated_dir / "ignored.py").write_text("import numpy\n", encoding="utf-8")
@@ -158,6 +164,21 @@ def test_gitignore_patterns_are_applied(tmp_path):
     assert "numpy" not in imports
     assert "flask" not in imports
     assert "django" not in imports
+
+
+def test_nested_gitignore_patterns_are_applied(tmp_path):
+    project_dir = tmp_path / "nested_ignored_project"
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (project_dir / ".gitignore").write_text("*.py\n", encoding="utf-8")
+    (nested_dir / ".gitignore").write_text("!active.py\n", encoding="utf-8")
+    (nested_dir / "generated.py").write_text("import numpy\n", encoding="utf-8")
+    (nested_dir / "active.py").write_text("import requests\n", encoding="utf-8")
+
+    imports = extract_imports(str(project_dir))
+
+    assert "requests" in imports
+    assert "numpy" not in imports
 
 
 def test_xdg_is_not_treated_as_standard_library(tmp_path):
@@ -195,26 +216,63 @@ def test_audit_marks_unknown_mapping_as_unresolved(tmp_path):
         }
     ]
 
-@patch('importlib.metadata.distributions')
+
+@patch("yyds_pip_audit.audit.build_local_import_mapping")
+def test_empty_project_skips_dependency_mapping(mock_mapping, tmp_path):
+    (tmp_path / "main.py").write_text("value = 1\n", encoding="utf-8")
+
+    assert audit_dependencies(str(tmp_path)) == []
+    mock_mapping.assert_not_called()
+
+
+@patch("importlib.metadata.distributions")
+def test_mapping_skips_metadata_for_unrelated_top_level(mock_dists):
+    class UnrelatedDistribution:
+        files = []
+
+        def read_text(self, filename):
+            assert filename == "top_level.txt"
+            return "unrelated\n"
+
+        @property
+        def metadata(self):
+            raise AssertionError("unrelated distribution metadata should not be read")
+
+    class RelevantDistribution:
+        files = []
+        metadata = {"Name": "wanted-distribution"}
+
+        def read_text(self, filename):
+            assert filename == "top_level.txt"
+            return "wanted\n"
+
+    mock_dists.return_value = [UnrelatedDistribution(), RelevantDistribution()]
+
+    mapping = build_local_import_mapping({"wanted"})
+
+    assert mapping["wanted"] == "wanted-distribution"
+
+
+@patch("importlib.metadata.distributions")
 def test_build_local_import_mapping(mock_dists):
     # Mock some distributions
     mock_dist1 = MagicMock()
-    mock_dist1.metadata = {'Name': 'opencv-python'}
+    mock_dist1.metadata = {"Name": "opencv-python"}
     mock_dist1.read_text.return_value = "cv2"
-    
+
     mock_dist2 = MagicMock()
-    mock_dist2.metadata = {'Name': 'Pillow'}
+    mock_dist2.metadata = {"Name": "Pillow"}
     mock_dist2.read_text.return_value = "PIL\n# comment"
-    
+
     mock_dist3 = MagicMock()
-    mock_dist3.metadata = {'Name': 'requests'}
+    mock_dist3.metadata = {"Name": "requests"}
     # read_text raises exception to test fallback
     mock_dist3.read_text.side_effect = Exception("No top_level.txt")
-    
+
     mock_dists.return_value = [mock_dist1, mock_dist2, mock_dist3]
-    
+
     mapping = build_local_import_mapping()
-    
+
     assert mapping["cv2"] == "opencv-python"
     assert mapping["PIL"] == "Pillow"
     # Fallback normalizations
@@ -223,35 +281,47 @@ def test_build_local_import_mapping(mock_dists):
     assert mapping["yaml"] == "PyYAML"
 
 
-@patch('importlib.metadata.distributions')
+@patch("importlib.metadata.distributions")
 def test_build_mapping_uses_files_for_nonstandard_name(mock_dists):
     dist = MagicMock()
-    dist.metadata = {'Name': 'different-distribution-name'}
+    dist.metadata = {"Name": "different-distribution-name"}
     dist.read_text.return_value = None
-    dist.files = [Path('unusual_import/__init__.py')]
+    dist.files = [Path("unusual_import/__init__.py")]
     mock_dists.return_value = [dist]
 
-    mapping = build_local_import_mapping({'unusual_import'})
+    mapping = build_local_import_mapping({"unusual_import"})
 
-    assert mapping['unusual_import'] == 'different-distribution-name'
-    assert mapping['onnxruntime'] == 'onnxruntime'
+    assert mapping["unusual_import"] == "different-distribution-name"
+    assert mapping["onnxruntime"] == "onnxruntime"
+
 
 def test_resolve_pypi_name():
     from yyds_pip_audit.audit import resolve_pypi_name
+
     mapping = {
         "google.cloud.storage": "google-cloud-storage",
         "google.cloud.pubsub": "google-cloud-pubsub",
-        "requests": "requests"
+        "requests": "requests",
     }
-    
-    assert resolve_pypi_name("google.cloud.storage.blob", mapping) == ("google-cloud-storage", "google.cloud.storage")
-    assert resolve_pypi_name("google.cloud.pubsub.client", mapping) == ("google-cloud-pubsub", "google.cloud.pubsub")
+
+    assert resolve_pypi_name("google.cloud.storage.blob", mapping) == (
+        "google-cloud-storage",
+        "google.cloud.storage",
+    )
+    assert resolve_pypi_name("google.cloud.pubsub.client", mapping) == (
+        "google-cloud-pubsub",
+        "google.cloud.pubsub",
+    )
     assert resolve_pypi_name("requests.adapters", mapping) == ("requests", "requests")
-    assert resolve_pypi_name("unknown_package", mapping) == ("unknown_package", "unknown_package")
+    assert resolve_pypi_name("unknown_package", mapping) == (
+        "unknown_package",
+        "unknown_package",
+    )
 
 
 def test_normalize_package_name():
     from yyds_pip_audit.audit import normalize_package_name
+
     assert normalize_package_name("google.cloud.storage") == "google-cloud-storage"
     assert normalize_package_name("Django") == "django"
     assert normalize_package_name("ruamel.yaml") == "ruamel-yaml"
@@ -261,11 +331,11 @@ def test_normalize_package_name():
 
 def test_parse_requirements_file_advanced(tmp_path):
     from yyds_pip_audit.audit import parse_requirements_file
-    
+
     # Create recursive requirements files
     req_sub = tmp_path / "requirements_sub.txt"
     req_sub.write_text("requests==2.26.0\npillow>=9.0.0\n", encoding="utf-8")
-    
+
     req_main = tmp_path / "requirements.txt"
     req_main.write_text(
         f"-r {req_sub.name}\n"
@@ -273,23 +343,31 @@ def test_parse_requirements_file_advanced(tmp_path):
         "-e git+https://github.com/psf/requests.git@v2.26.0#egg=requests\n"
         "google-cloud-storage @ https://github.com/.../google-cloud-storage-1.0.0.tar.gz\n"
         "numpy; python_version < '3.9'\n",
-        encoding="utf-8"
+        encoding="utf-8",
     )
-    
+
     parsed = parse_requirements_file(str(req_main))
-    
+
     # Check that Django, requests, pillow, google-cloud-storage, numpy are all parsed
     assert "django" in parsed
     assert "requests" in parsed
     assert "pillow" in parsed
     assert "google-cloud-storage" in parsed
     assert "numpy" in parsed
-    
+
     assert parsed["django"]["name"] == "Django"
     assert parsed["requests"]["name"] == "requests"
     assert parsed["pillow"]["name"] == "pillow"
     assert parsed["google-cloud-storage"]["name"] == "google-cloud-storage"
     assert parsed["numpy"]["name"] == "numpy"
+
+
+def test_parse_requirements_file_rejects_missing_include(tmp_path):
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("-r missing.txt\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="missing.txt"):
+        parse_requirements_file(str(requirements))
 
 
 def test_parse_requirements_handles_hashes_comments_and_markers(tmp_path):
@@ -318,15 +396,10 @@ def test_parse_requirements_handles_hashes_comments_and_markers(tmp_path):
 
 def test_parse_gitignore(tmp_path):
     from yyds_pip_audit.audit import parse_gitignore
+
     gitignore = tmp_path / ".gitignore"
-    gitignore.write_text(
-        "# Comments\n"
-        "venv/\n"
-        "custom/path/\n"
-        "*.pyc\n",
-        encoding="utf-8"
-    )
-    
+    gitignore.write_text("# Comments\nvenv/\ncustom/path/\n*.pyc\n", encoding="utf-8")
+
     patterns = parse_gitignore(str(tmp_path))
     assert "venv" in patterns
     assert "custom/path" in patterns
@@ -337,28 +410,61 @@ def test_should_exclude_dir():
     from pathlib import Path
 
     from yyds_pip_audit.audit import should_exclude_dir
-    
+
     project_path = Path("/home/user/project")
     exclude_base = {"venv", "data"}
     exclude_paths = {Path("/home/user/project/src/custom")}
-    
-    assert should_exclude_dir("/home/user/project/venv", "venv", project_path, exclude_base, exclude_paths) is True
-    assert should_exclude_dir("/home/user/project/src/custom", "custom", project_path, exclude_base, exclude_paths) is True
-    assert should_exclude_dir("/home/user/project/src/custom/sub", "sub", project_path, exclude_base, exclude_paths) is True
-    assert should_exclude_dir("/home/user/project/src/other", "other", project_path, exclude_base, exclude_paths) is False
+
+    assert (
+        should_exclude_dir(
+            "/home/user/project/venv", "venv", project_path, exclude_base, exclude_paths
+        )
+        is True
+    )
+    assert (
+        should_exclude_dir(
+            "/home/user/project/src/custom",
+            "custom",
+            project_path,
+            exclude_base,
+            exclude_paths,
+        )
+        is True
+    )
+    assert (
+        should_exclude_dir(
+            "/home/user/project/src/custom/sub",
+            "sub",
+            project_path,
+            exclude_base,
+            exclude_paths,
+        )
+        is True
+    )
+    assert (
+        should_exclude_dir(
+            "/home/user/project/src/other",
+            "other",
+            project_path,
+            exclude_base,
+            exclude_paths,
+        )
+        is False
+    )
 
 
 def test_load_config_from_toml(tmp_path):
     from yyds_pip_audit.cli import load_config_from_toml
+
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         "[tool.yyds-pip-audit]\n"
-        "exclude = [\"build_assets\", \"custom_dir\"]\n"
-        "format = \"json\"\n"
-        "output = \"audit_report.json\"\n",
-        encoding="utf-8"
+        'exclude = ["build_assets", "custom_dir"]\n'
+        'format = "json"\n'
+        'output = "audit_report.json"\n',
+        encoding="utf-8",
     )
-    
+
     config = load_config_from_toml(str(tmp_path))
     assert config.get("exclude") == ["build_assets", "custom_dir"]
     assert config.get("format") == "json"
@@ -369,7 +475,7 @@ def test_import_visitor_dynamic():
     import ast
 
     from yyds_pip_audit.audit import ImportVisitor
-    
+
     code = """
 import requests
 def load():
@@ -380,7 +486,7 @@ def load():
     tree = ast.parse(code)
     visitor = ImportVisitor()
     visitor.visit(tree)
-    
+
     assert "requests" in visitor.imports
     assert "pandas" in visitor.imports
     assert "numpy" in visitor.imports
@@ -408,28 +514,27 @@ def test_cli_main(tmp_path):
     from click.testing import CliRunner
 
     from yyds_pip_audit.cli import main
-    
+
     # Create pyproject.toml and a python file
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        "[tool.yyds-pip-audit]\n"
-        "exclude = [\"custom_dir\"]\n",
-        encoding="utf-8"
+        '[tool.yyds-pip-audit]\nexclude = ["custom_dir"]\n', encoding="utf-8"
     )
-    
+
     custom_dir = tmp_path / "custom_dir"
     custom_dir.mkdir()
     skipped_file = custom_dir / "skipped.py"
     skipped_file.write_text("import numpy\n", encoding="utf-8")
-    
+
     main_file = tmp_path / "main.py"
     main_file.write_text("import requests\n", encoding="utf-8")
-    
+
     runner = CliRunner()
     result = runner.invoke(main, [str(tmp_path), "-f", "json"])
     assert result.exit_code == 0
-    
+
     import json
+
     data = json.loads(result.output)
     deps = [d["pypi_name"] for d in data["dependencies"]]
     assert "requests" in deps
@@ -447,12 +552,35 @@ def test_cli_fail_on_missing(tmp_path):
 
     result = CliRunner().invoke(
         main,
-        [str(tmp_path), "--check", str(requirements), "--fail-on", "missing", "-f", "json"],
+        [
+            str(tmp_path),
+            "--check",
+            str(requirements),
+            "--fail-on",
+            "missing",
+            "-f",
+            "json",
+        ],
     )
 
     assert result.exit_code == 1
-    data = __import__('json').loads(result.output)
+    data = __import__("json").loads(result.output)
     assert data["check"]["missing"] == ["requests"]
+
+
+def test_cli_reports_missing_recursive_requirements(tmp_path):
+    from click.testing import CliRunner
+
+    from yyds_pip_audit.cli import main
+
+    (tmp_path / "main.py").write_text("import requests\n", encoding="utf-8")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("-r missing.txt\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, [str(tmp_path), "--check", str(requirements)])
+
+    assert result.exit_code != 0
+    assert "missing.txt" in result.output
 
 
 def test_config_output_cannot_escape_project(tmp_path):
@@ -464,9 +592,7 @@ def test_config_output_cannot_escape_project(tmp_path):
     project_dir.mkdir()
     (project_dir / "main.py").write_text("import requests\n", encoding="utf-8")
     (project_dir / "pyproject.toml").write_text(
-        "[tool.yyds-pip-audit]\n"
-        "format = \"json\"\n"
-        "output = \"../escaped.json\"\n",
+        '[tool.yyds-pip-audit]\nformat = "json"\noutput = "../escaped.json"\n',
         encoding="utf-8",
     )
 
@@ -505,7 +631,7 @@ def test_requirements_export_skips_unresolved_by_default():
 
 def test_format_display_imports():
     from yyds_pip_audit.cli import format_display_imports
-    
+
     assert format_display_imports("") == ""
     assert format_display_imports("requests") == "requests"
     assert format_display_imports("requests, pillow") == "requests, pillow"
